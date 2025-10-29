@@ -8,10 +8,15 @@ import pandas as pd
 SECURITY_TOKEN = None
 CST = None
 
-def load_credentials():
-    with open("credentials.json", "r", encoding="utf-8") as f:
-        return json.load(f)
 
+
+
+def load_credentials():
+    return {
+        "identifier": os.environ["IDENTIFIER"],
+        "password": os.environ["PASSWORD"],
+        "api_key": os.environ["X_CAP_API_KEY"]
+    }
 
 def tokens():
     global SECURITY_TOKEN, CST
