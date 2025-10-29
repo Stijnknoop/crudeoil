@@ -1,15 +1,14 @@
-# main.py
 import http.client
 import json
 import pandas as pd
 import os
+from datetime import datetime
 
-# Globale variabelen voor tokens
+# Globale tokens
 SECURITY_TOKEN = None
 CST = None
 
 def load_credentials():
-    """Laad credentials uit environment variables (GitHub Secrets)."""
     return {
         "identifier": os.environ["IDENTIFIER"],
         "password": os.environ["PASSWORD"],
@@ -18,59 +17,26 @@ def load_credentials():
 
 def tokens():
     global SECURITY_TOKEN, CST
-
     creds = load_credentials()
     identifier = creds['identifier']
     password = creds['password']
     api_key = creds['api_key']
 
     conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
-
-    payload = json.dumps({
-        "identifier": identifier,
-        "password": password
-    })
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-CAP-API-KEY": api_key
-    } 
+    payload = json.dumps({"identifier": identifier, "password": password})
+    headers = {"Content-Type": "application/json", "X-CAP-API-KEY": api_key}
 
     conn.request("POST", "/api/v1/session", payload, headers)
     res = conn.getresponse()
-    data = res.read()
-    print("Login response:", data.decode("utf-8"))
-
-    # Tokens uit response headers
     CST = res.getheader("CST")
     SECURITY_TOKEN = res.getheader("X-SECURITY-TOKEN")
-    print("CST:", CST)
-    print("X-SECURITY-TOKEN:", SECURITY_TOKEN)
-
-    # Test ping
-    conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
-    headers = {
-        "X-SECURITY-TOKEN": SECURITY_TOKEN,
-        "CST": CST
-    }
-    conn.request("GET", "/api/v1/ping", '', headers)
-    res = conn.getresponse()
-    data = res.read()
-    print("Ping response:", data.decode("utf-8"))
-
     return SECURITY_TOKEN, CST
 
 def data_nu():
-    """Haal de meest recente OIL_CRUDE data op."""
     global SECURITY_TOKEN, CST
-
     conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
     payload = ''
-    headers = {
-        'X-SECURITY-TOKEN': SECURITY_TOKEN,
-        'CST': CST
-    }
-
+    headers = {'X-SECURITY-TOKEN': SECURITY_TOKEN, 'CST': CST}
     epic = "OIL_CRUDE"
     resolution = "MINUTE"
     max_candles = 1000
@@ -78,9 +44,7 @@ def data_nu():
 
     conn.request("GET", url, payload, headers)
     res = conn.getresponse()
-    data = res.read()
-
-    ohlc = json.loads(data.decode("utf-8"))
+    ohlc = json.loads(res.read().decode("utf-8"))
     prices = ohlc.get('prices', [])
 
     df = pd.json_normalize(prices)
@@ -90,20 +54,22 @@ def data_nu():
         'openPrice.ask', 'highPrice.ask', 'lowPrice.ask', 'closePrice.ask',
         'lastTradedVolume'
     ]]
-
     df.columns = [
         'time',
         'open_bid', 'high_bid', 'low_bid', 'close_bid',
         'open_ask', 'high_ask', 'low_ask', 'close_ask',
         'volume'
     ]
-
     df['time'] = pd.to_datetime(df['time'])
-
     return df
 
 if __name__ == "__main__":
     tokens()
     df = data_nu()
-    df.to_csv("outputs.csv", index=False)
-    print("CSV opgeslagen als outputs.csv")
+
+    # Maak timestamp voor bestandsnaam
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"outputs_{timestamp}.csv"
+
+    df.to_csv(filename, index=False)
+    print(f"CSV opgeslagen als {filename}")
