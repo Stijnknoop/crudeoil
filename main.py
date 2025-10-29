@@ -1,17 +1,15 @@
-
-# main.py (aangepast om credentials.json te gebruiken)
+# main.py
 import http.client
 import json
 import pandas as pd
+import os
 
-# Globale variabelen
+# Globale variabelen voor tokens
 SECURITY_TOKEN = None
 CST = None
 
-
-
-
 def load_credentials():
+    """Laad credentials uit environment variables (GitHub Secrets)."""
     return {
         "identifier": os.environ["IDENTIFIER"],
         "password": os.environ["PASSWORD"],
@@ -22,9 +20,9 @@ def tokens():
     global SECURITY_TOKEN, CST
 
     creds = load_credentials()
-    identifier = creds['app']['identifier']
-    password = creds['app']['password']
-    api_key = creds['api']['x_cap_api_key']
+    identifier = creds['identifier']
+    password = creds['password']
+    api_key = creds['api_key']
 
     conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
 
@@ -43,7 +41,7 @@ def tokens():
     data = res.read()
     print("Login response:", data.decode("utf-8"))
 
-    # Tokens uit headers
+    # Tokens uit response headers
     CST = res.getheader("CST")
     SECURITY_TOKEN = res.getheader("X-SECURITY-TOKEN")
     print("CST:", CST)
@@ -62,8 +60,8 @@ def tokens():
 
     return SECURITY_TOKEN, CST
 
-
 def data_nu():
+    """Haal de meest recente OIL_CRUDE data op."""
     global SECURITY_TOKEN, CST
 
     conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
@@ -86,7 +84,7 @@ def data_nu():
     prices = ohlc.get('prices', [])
 
     df = pd.json_normalize(prices)
-    df = df[[
+    df = df[[  
         'snapshotTime',
         'openPrice.bid', 'highPrice.bid', 'lowPrice.bid', 'closePrice.bid',
         'openPrice.ask', 'highPrice.ask', 'lowPrice.ask', 'closePrice.ask',
@@ -103,7 +101,6 @@ def data_nu():
     df['time'] = pd.to_datetime(df['time'])
 
     return df
-
 
 if __name__ == "__main__":
     tokens()
