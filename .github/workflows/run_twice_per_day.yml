@@ -1,11 +1,11 @@
 name: Run Python script twice per day
 
-# Schedule: 06:00 en 18:00 UTC
 on:
+  # Automatische runs op schema
   schedule:
-    - cron: '0 6 * * *'
-    - cron: '0 18 * * *'
-  #handmatig triggeren
+    - cron: '0 6 * * *'   # 06:00 UTC
+    - cron: '0 18 * * *'  # 18:00 UTC
+  # Handmatig triggeren
   workflow_dispatch:
 
 jobs:
@@ -28,25 +28,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas matplotlib
 
-      # 4️⃣ Zet je secrets als environment variables
-      - name: Set secrets
-        run: echo "Secrets loaded"
+      # 4️⃣ Run script met credentials via secrets
+      - name: Run script
+        run: python main.py
         env:
           IDENTIFIER: ${{ secrets.IDENTIFIER }}
           PASSWORD: ${{ secrets.PASSWORD }}
           X_CAP_API_KEY: ${{ secrets.X_CAP_API_KEY }}
 
-      # 5️⃣ Run script
-      - name: Run script
-        run: python main.py
-
-      # 6️⃣ Commit en push CSV terug naar repo
+      # 5️⃣ Commit en push CSV terug naar repo
       - name: Push CSV
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           git add outputs.csv
-          git commit -m "Automated update"
+          git commit -m "Automated update" || echo "Nothing to commit"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
