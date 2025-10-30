@@ -3,14 +3,14 @@ import glob
 import os
 from datetime import datetime
 
-# Zoek alle CSV-bestanden in de repo (pas eventueel pad aan)
+# Zoek ALLE CSV-bestanden (inclusief eerdere merges)
 csv_files = sorted(glob.glob("outputs_*.csv"))
 
-# Alleen doorgaan als er meerdere CSV's zijn
-if len(csv_files) > 1:
+# Alleen doorgaan als er minstens één CSV is
+if len(csv_files) > 0:
     print(f"Gevonden CSV-bestanden: {csv_files[:5]}{'...' if len(csv_files) > 5 else ''}")
 
-    # Lees ALLE CSV-bestanden in
+    # Lees alle CSV-bestanden in
     df_list = [pd.read_csv(f) for f in csv_files]
 
     # Voeg alles samen
@@ -19,9 +19,11 @@ if len(csv_files) > 1:
     # Ontdubbel op kolom 'time'
     if 'time' in merged_df.columns:
         merged_df = merged_df.drop_duplicates(subset=['time'])
-        print("Ontdubbeld op kolom 'time'.")
+        # Sorteer op kolom 'time'
+        merged_df = merged_df.sort_values(by='time', ascending=True)
+        print("Ontdubbeld en gesorteerd op kolom 'time' (ascending).")
     else:
-        print("⚠️ Waarschuwing: kolom 'time' niet gevonden — geen ontdubbeling uitgevoerd.")
+        print("⚠️ Waarschuwing: kolom 'time' niet gevonden — geen ontdubbeling of sortering uitgevoerd.")
 
     # Maak timestamp voor de bestandsnaam
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -31,10 +33,11 @@ if len(csv_files) > 1:
     merged_df.to_csv(merged_filename, index=False)
     print(f"Samengevoegde CSV opgeslagen als: {merged_filename}")
 
-    # (Optioneel) Oude CSV’s verwijderen
+    # Verwijder ALLE oude CSV-bestanden (inclusief vorige merges)
     for f in csv_files:
-        os.remove(f)
-        print(f"Verwijderd: {f}")
+        if f != merged_filename:
+            os.remove(f)
+            print(f"Verwijderd: {f}")
 
 else:
-    print("Er is slechts één of geen CSV-bestand — geen samenvoeging nodig.")
+    print("Geen CSV-bestanden gevonden — geen actie ondernomen.")
