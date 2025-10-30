@@ -15,10 +15,12 @@ if len(csv_files) > 1:
 
     # Voeg alles samen
     merged_df = pd.concat(df_list, ignore_index=True)
+    
 
     # Ontdubbel op kolom 'time'
     if 'time' in merged_df.columns:
         merged_df = merged_df.drop_duplicates(subset=['time'])
+        merged_df = merged_df.sort_values(by='time', ascending=True).reset_index(drop=True)
         print("Ontdubbeld op kolom 'time'.")
     else:
         print("⚠️ Waarschuwing: kolom 'time' niet gevonden — geen ontdubbeling uitgevoerd.")
