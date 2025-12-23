@@ -7,6 +7,10 @@ on:
   workflow_dispatch:
     # Hiermee kun je de actie handmatig starten via het 'Actions' tabblad
 
+# Dwing schrijfrechten af voor de bot (tegen Error 403)
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,10 +38,11 @@ jobs:
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
           
-          # Voeg de nieuwe map en bestanden toe
+          # Forceer het toevoegen van de map Trading_details
           git add Trading_details/
           
-          # Commit en push de wijzigingen
-          # De '|| echo' voorkomt dat de actie faalt als er geen wijzigingen zijn
+          # Alleen committen als er wijzigingen zijn
           git commit -m "Update rapportage en balans: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
+          
+          # Push de wijzigingen terug naar de repository
           git push
