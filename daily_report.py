@@ -148,14 +148,21 @@ if __name__ == "__main__":
         day_ret, active, current_sl = 0, False, BEST_SL
         trade_info = {"date": current_key, "type": "None", "pct": 0, "balance": equity_val}
 
+        # Voor plotdoeleinden
+        entry_time, exit_time = None, None
+        entry_price, exit_price = None, None
+        trade_type = None
+
         for j in range(len(pl)):
             if not active and hours[j] < 23:
                 if pl[j] > t_l: 
                     ent_p, side, active = prices[j], 1, True
                     trade_info.update({"type": "LONG", "entry_p": prices[j], "entry_t": str(times[j])})
+                    entry_time, entry_price, trade_type = times[j], prices[j], "LONG"
                 elif ps[j] > t_s: 
                     ent_p, side, active = prices[j], -1, True
                     trade_info.update({"type": "SHORT", "entry_p": prices[j], "entry_t": str(times[j])})
+                    entry_time, entry_price, trade_type = times[j], prices[j], "SHORT"
             elif active:
                 r = ((prices[j] - ent_p) / ent_p) * side
                 # Trailing stop logica
@@ -164,6 +171,7 @@ if __name__ == "__main__":
                 if r >= BEST_TP or r <= current_sl or j == len(pl)-1 or hours[j] >= 23:
                     day_ret = r
                     trade_info.update({"exit_p": prices[j], "exit_t": str(times[j]), "pct": r})
+                    exit_time, exit_price = times[j], prices[j]
                     active = False; break
         
         # --- ACCOUNT UPDATE (De 13% Compound Logica) ---
@@ -174,11 +182,35 @@ if __name__ == "__main__":
         trade_info.update({"dollar_profit": dollar_profit, "balance": equity_val})
         daily_logs.append(trade_info)
 
+        # --- PLOT VOOR INDIVIDUELE DAG ---
+        fig, ax = plt.subplots(figsize=(15, 7))
+        ax.plot(df_day['time'], df_day['close_bid'], color='blue', label='Close Bid Price')
+        
+        if entry_time and entry_price:
+            ax.plot(entry_time, entry_price, marker='^', markersize=10, color='green', label=f'Entry ({trade_type})', zorder=5)
+            ax.annotate(f'Entry: {entry_price:.2f}', (entry_time, entry_price), 
+                        textcoords="offset points", xytext=(0,10), ha='center', color='green')
+        
+        if exit_time and exit_price:
+            ax.plot(exit_time, exit_price, marker='v', markersize=10, color='red', label='Exit', zorder=5)
+            ax.annotate(f'Exit: {exit_price:.2f}', (exit_time, exit_price), 
+                        textcoords="offset points", xytext=(0,-15), ha='center', color='red')
+
+        ax.set_title(f"Trading Day: {df_day['date'].iloc[0]} - Trade: {trade_type or 'No Trade'} - P&L: {dollar_profit:.2f}")
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Price")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"daily_trade_{df_day['date'].iloc[0]}.png"))
+        plt.close(fig) # Sluit de plot om geheugen te besparen
+        
+
     # --- RESULTATEN OPSLAAN ---
     df_res = pd.DataFrame(daily_logs)
     df_res.to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
 
-    # Plot genereren
+    # Plot genereren voor equity curve
     plt.figure(figsize=(15, 7))
     plt.plot(df_res['balance'], marker='o', color='dodgerblue', label='Equity Curve')
     plt.title(f"Hybrid Strategy Balance: ${equity_val:.2f}")
