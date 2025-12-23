@@ -1,249 +1,136 @@
-# ===============================
-# LEAK-FREE INTRADAY ML BACKTEST
-# ===============================
-
-import os
-import re
 import requests
-import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")  # required for GitHub Actions
+import numpy as np
 import matplotlib.pyplot as plt
-
 from sklearn.ensemble import RandomForestRegressor
+import re
+import os
 
-# ===============================
-# CONFIG
-# ===============================
+output_dir = "Trading_details"
+os.makedirs(output_dir, exist_ok=True)
 
-OUTPUT_DIR = "Trading_details"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-SEED = 42
-np.random.seed(SEED)
-
-INITIAL_BALANCE = 10_000.0
-RISK_PER_TRADE = 0.02          # 2% per trade
-STOP_LOSS_R = -1.0             # -1R
-TAKE_PROFIT_R = 1.25           # +1.25R
-TRAIL_START_R = 0.6
-TRAIL_DISTANCE_R = 0.4
-
-MAX_HOUR = 23                  # stop trading after 23h
-LOOKAHEAD = 30                 # minutes
-
-FEATURES = [
-    "z_score_30m",
-    "rsi",
-    "macd",
-    "volatility_proxy",
-    "day_progression",
-    "hour",
-    "trend_1h"
-]
-
-# ===============================
-# DATA INGEST
-# ===============================
-
-def load_latest_csv():
+# 1. DATA OPHALEN
+def read_latest_csv_from_crudeoil():
     user, repo, branch = "Stijnknoop", "crudeoil", "master"
-    api = f"https://api.github.com/repos/{user}/{repo}/contents?ref={branch}"
-    r = requests.get(api)
-    r.raise_for_status()
-    files = r.json()
-    csv = next(f for f in files if f["name"].endswith(".csv"))
-    return pd.read_csv(csv["download_url"])
+    api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref={branch}"
+    response = requests.get(api_url)
+    if response.status_code != 200: raise Exception("API Error")
+    files = response.json()
+    csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
+    return pd.read_csv(csv_file['download_url'])
 
-def split_trading_days():
-    df = load_latest_csv()
-    df["time"] = pd.to_datetime(df["time"])
-    df = df.sort_values("time")
-
-    full_idx = pd.date_range(df["time"].min(), df["time"].max(), freq="min")
-    df = pd.DataFrame({"time": full_idx}).merge(df, on="time", how="left")
-
-    df["has_data"] = df["open_bid"].notna()
-    df["date"] = df["time"].dt.date
-
-    df = df[df.groupby("date")["has_data"].transform("any")]
-    df.loc[:, df.columns.difference(["time", "date", "has_data"])] = \
-        df.groupby(df["has_data"].cumsum()).ffill()
-
-    # identify session gaps
-    gap = (~df["has_data"]) & (df["time"].dt.hour >= 20)
-    df["gap_group"] = (gap != gap.shift()).cumsum()
-
-    gap_info = df[gap].groupby("gap_group").size()
-    long_gaps = gap_info[gap_info >= 10].index
-
-    df["session"] = 1
-    for g in long_gaps:
-        end = df[df["gap_group"] == g]["time"].max()
-        df.loc[df["time"] > end, "session"] += 1
-
-    days = {}
-    for i, (_, d) in enumerate(df.groupby("session"), 1):
-        if d["has_data"].sum() > 200:
-            days[f"day_{i}"] = d.reset_index(drop=True)
-
-    return days
-
-# ===============================
-# FEATURE ENGINEERING (NO LEAKAGE)
-# ===============================
-
+# 2. FEATURE ENGINEERING (LEAK-FREE)
 def add_features(df):
-    df = df.copy()
+    df = df.copy().sort_values('time')
+    
+    # Basis indicatoren
+    df['hour'] = df['time'].dt.hour
+    df['volatility'] = (df['high_bid'] - df['low_bid']).rolling(15).mean()
+    df['macd'] = df['close_bid'].ewm(span=12).mean() - df['close_bid'].ewm(span=26).mean()
+    
+    delta = df['close_bid'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+    
+    # 1H Trend (Shifted om leakage te voorkomen)
+    df_1h = df.resample('1h', on='time').agg({'close_bid': 'last'}).shift(1)
+    df_1h.columns = ['last_hour_close']
+    df = df.merge(df_1h, left_on=df['time'].dt.floor('1h'), right_index=True, how='left')
 
-    df["hour"] = df["time"].dt.hour
-    df["minute"] = df["time"].dt.minute
-    df["day_progression"] = (df["hour"] * 60 + df["minute"]) / 1440
+    # CRUCIAAL: Shift alle features met 1 minuut. 
+    # Je gebruikt de data van de VOLTOOIDE vorige minuut om NU te beslissen.
+    feature_cols = ['hour', 'volatility', 'macd', 'rsi', 'last_hour_close']
+    df[feature_cols] = df[feature_cols].shift(1)
+    
+    return df.dropna() # Verwijdert de rijen waar indicatoren nog niet klaar zijn
 
-    df["volatility_proxy"] = (
-        (df["high_bid"] - df["low_bid"])
-        .rolling(15)
-        .mean()
-        / (df["close_bid"] + 1e-9)
-    )
-
-    ma = df["close_bid"].rolling(30)
-    df["z_score_30m"] = (df["close_bid"] - ma.mean()) / (ma.std() + 1e-9)
-
-    delta = df["close_bid"].diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    df["rsi"] = 100 - 100 / (1 + gain / (loss + 1e-9))
-
-    ema12 = df["close_bid"].ewm(span=12).mean()
-    ema26 = df["close_bid"].ewm(span=26).mean()
-    df["macd"] = ema12 - ema26
-
-    # 1H trend (previous closed candle)
-    h1 = df.resample("1h", on="time").agg({"close_bid": "last"}).shift(1)
-    df["trend_1h"] = (
-        df["close_bid"] - df["time"].dt.floor("1h").map(h1["close_bid"])
-    ) / (df["close_bid"] + 1e-9)
-
-    # IMPORTANT: shift everything by 1 bar
-    df[FEATURES] = df[FEATURES].shift(1)
-
-    return df.ffill()
-
-# ===============================
-# DATASET CREATION
-# ===============================
-
-def build_xy(keys, data):
-    X, yL, yS = [], [], []
-
+def get_xy(keys, d_dict, f_selected):
+    X, yl, ys = [], [], []
     for k in keys:
-        df = add_features(data[k]).dropna()
-        p = df["close_bid"].values
+        df_f = add_features(d_dict[k])
+        if len(df_f) < 60: continue
+        
+        p = df_f['close_bid'].values
+        # Target: wat gebeurt er in de KOMENDE 30 minuten
+        t_l = [(np.max(p[i+1:i+31]) - p[i])/p[i] for i in range(len(p)-30)]
+        t_s = [(p[i] - np.min(p[i+1:i+31]))/p[i] for i in range(len(p)-30)]
+        
+        X.append(df_f[f_selected].values[:-30])
+        yl.append(t_l)
+        ys.append(t_s)
+    return np.vstack(X), np.concatenate(yl), np.concatenate(ys)
 
-        for i in range(len(df) - LOOKAHEAD):
-            future = p[i + 1:i + LOOKAHEAD + 1]
-            yL.append((future.max() - p[i]) / p[i])
-            yS.append((p[i] - future.min()) / p[i])
-            X.append(df[FEATURES].iloc[i].values)
-
-    return np.array(X), np.array(yL), np.array(yS)
-
-# ===============================
-# BACKTEST
-# ===============================
-
-def run_backtest():
-    days = split_trading_days()
-    keys = sorted(days, key=lambda k: int(re.search(r"\d+", k).group()))
-
-    balance = INITIAL_BALANCE
-    logs = []
-
-    for i in range(40, len(keys)):
-        train_keys = keys[:i - 10]
-        val_keys = keys[i - 10:i]
-        test_key = keys[i]
-
-        X, yL, yS = build_xy(train_keys, days)
-
-        model_L = RandomForestRegressor(
-            n_estimators=150,
-            max_depth=6,
-            random_state=SEED,
-            n_jobs=-1
-        ).fit(X, yL)
-
-        model_S = RandomForestRegressor(
-            n_estimators=150,
-            max_depth=6,
-            random_state=SEED,
-            n_jobs=-1
-        ).fit(X, yS)
-
-        Xv, _, _ = build_xy(val_keys, days)
-        thr_L = np.percentile(model_L.predict(Xv), 97)
-        thr_S = np.percentile(model_S.predict(Xv), 97)
-
-        df = add_features(days[test_key]).dropna()
-        prices = df["close_bid"].values
-        hours = df["hour"].values
-
-        preds_L = model_L.predict(df[FEATURES].values)
-        preds_S = model_S.predict(df[FEATURES].values)
-
+# 3. BACKTEST LOOP
+if __name__ == "__main__":
+    dag_dict = prepare_trading_days() # Gebruik je bestaande functie
+    sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
+    
+    f_selected = ['hour', 'volatility', 'macd', 'rsi', 'last_hour_close']
+    equity_val = 10000.0
+    daily_logs = []
+    
+    # Start na de training buffer
+    for i in range(60, len(sorted_keys)):
+        current_key = sorted_keys[i]
+        # Train op verleden
+        X_train, yl_train, ys_train = get_xy(sorted_keys[i-40:i], dag_dict, f_selected)
+        model_l = RandomForestRegressor(n_estimators=50, max_depth=5, n_jobs=-1).fit(X_train, yl_train)
+        model_s = RandomForestRegressor(n_estimators=50, max_depth=5, n_jobs=-1).fit(X_train, ys_train)
+        
+        # Test op vandaag
+        df_today = add_features(dag_dict[current_key])
+        preds_l = model_l.predict(df_today[f_selected])
+        preds_s = model_s.predict(df_today[f_selected])
+        
+        prices = df_today['close_bid'].values
+        times = df_today['time'].values
+        
+        # Simpele thresholds op basis van percentile van de voorspellingen
+        t_l, t_s = np.percentile(preds_l, 95), np.percentile(preds_s, 95)
+        
         active = False
-        r_mult = 0.0
-        trail = STOP_LOSS_R
+        day_ret = 0
+        trade_info = {"date": str(times[0])[:10], "type": "None", "inleg_dollar": 0, "pct": 0, "balance": equity_val}
+        pts = []
 
-        for j in range(len(df) - LOOKAHEAD):
-            if not active and hours[j] < MAX_HOUR:
-                if preds_L[j] > thr_L:
-                    entry = prices[j]
-                    side = 1
-                    active = True
-                elif preds_S[j] > thr_S:
-                    entry = prices[j]
-                    side = -1
-                    active = True
+        # Risico instellingen
+        SL, TP = -0.004, 0.005
+        current_inleg = equity_val * (0.02 / abs(SL))
 
-            elif active:
-                r_mult = ((prices[j] - entry) / entry) * side / abs(STOP_LOSS_R)
-
-                if r_mult > TRAIL_START_R:
-                    trail = max(trail, r_mult - TRAIL_DISTANCE_R)
-
-                if (
-                    r_mult >= TAKE_PROFIT_R or
-                    r_mult <= trail or
-                    hours[j] >= MAX_HOUR
-                ):
+        for j in range(len(preds_l) - 30):
+            if not active:
+                if preds_l[j] > t_l:
+                    side, ent_p, active = 1, prices[j], True
+                    trade_info.update({"type": "LONG", "inleg_dollar": current_inleg})
+                    pts.append({'t': times[j], 'p': prices[j], 'm': 'UP'})
+                elif preds_s[j] > t_s:
+                    side, ent_p, active = -1, prices[j], True
+                    trade_info.update({"type": "SHORT", "inleg_dollar": current_inleg})
+                    pts.append({'t': times[j], 'p': prices[j], 'm': 'DOWN'})
+            else:
+                rel_ret = ((prices[j] - ent_p) / ent_p) * side
+                if rel_ret <= SL or rel_ret >= TP or j == len(preds_l) - 31:
+                    day_ret = rel_ret
+                    trade_info.update({"pct": day_ret})
+                    pts.append({'t': times[j], 'p': prices[j], 'm': 'EXIT'})
+                    active = False
                     break
 
-        gain = r_mult * RISK_PER_TRADE
-        old = balance
-        balance *= (1 + gain)
+        # Balans update
+        equity_val *= (1 + (day_ret * (0.02 / abs(SL))))
+        trade_info["balance"] = equity_val
+        daily_logs.append(trade_info)
+        
+        # Plotting (pijltjes)
+        plt.figure(figsize=(10,4))
+        plt.plot(times, prices, color='gray', alpha=0.5)
+        for p in pts:
+            c = 'green' if p['m'] == 'UP' else 'red' if p['m'] == 'DOWN' else 'black'
+            marker = '^' if p['m'] == 'UP' else 'v' if p['m'] == 'DOWN' else 'x'
+            plt.scatter(p['t'], p['p'], color=c, marker=marker, s=100)
+        plt.title(f"{trade_info['date']} | Inleg: ${current_inleg:.0f} | Profit: {day_ret:.2%}")
+        plt.savefig(os.path.join(output_dir, f"report_{trade_info['date']}.png"))
+        plt.close()
 
-        logs.append({
-            "date": str(df["time"].iloc[0].date()),
-            "R": r_mult,
-            "pct": gain,
-            "balance": balance,
-            "profit_$": balance - old
-        })
-
-    return pd.DataFrame(logs), balance
-
-# ===============================
-# RUN
-# ===============================
-
-if __name__ == "__main__":
-    results, final_balance = run_backtest()
-    results.to_csv(f"{OUTPUT_DIR}/trading_log.csv", index=False)
-
-    plt.figure(figsize=(12, 6))
-    plt.plot(results["balance"])
-    plt.title(f"Final balance: ${final_balance:,.2f}")
-    plt.savefig(f"{OUTPUT_DIR}/equity_curve.png")
+    pd.DataFrame(daily_logs).to_csv(os.path.join(output_dir, "trading_log.csv"), index=False)
