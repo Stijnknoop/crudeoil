@@ -2,15 +2,12 @@ name: Oil Trading Daily Report
 
 on:
   schedule:
-    # Draait elke dag om 08:00 UTC (09:00 Nederlandse wintertijd)
     - cron: '0 8 * * *'
-  workflow_dispatch: # Hiermee kun je de workflow handmatig starten via de 'Actions' tab
+  workflow_dispatch:
 
 jobs:
   report:
     runs-on: ubuntu-latest
-    
-    # Cruciaal voor het kunnen terugsturen van de CSV en PNG naar je repo
     permissions:
       contents: write
       
@@ -36,13 +33,10 @@ jobs:
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
           
-          # We voegen de log en de afbeelding toe
-          git add trading_log.csv last_day_plot.png
+          # Voeg de hele map toe. Als deze niet bestaat, gebeurt er niets.
+          git add Trading_details/ || echo "Geen map gevonden"
           
-          # Alleen committen als er daadwerkelijk iets is veranderd
-          if git diff --staged --quiet; then
-            echo "Geen wijzigingen om te committen"
-          else
-            git commit -m "Daily update: $(date +'%Y-%m-%d')"
-            git push
-          fi
+          # Commit alleen als er wijzigingen zijn
+          git commit -m "Daily update: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
+          
+          git push
