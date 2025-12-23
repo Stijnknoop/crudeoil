@@ -6,6 +6,8 @@ from sklearn.ensemble import RandomForestRegressor
 import re
 import os
 
+output_dir = "Trading_details"
+os.makedirs(output_dir, exist_ok=True)
 # ==================================================
 # 1. DATA OPHALEN & VOORBEREIDEN
 # ==================================================
@@ -168,3 +170,6 @@ if __name__ == "__main__":
     plt.savefig(os.path.join(output_dir, "latest_overview.png"))
     plt.close()
     print(f"Rapportages opgeslagen in {output_dir}")
+
+
+df_res.to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
