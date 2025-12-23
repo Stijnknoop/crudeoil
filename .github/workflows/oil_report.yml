@@ -2,41 +2,42 @@ name: Oil Trading Daily Report
 
 on:
   schedule:
+    # Draait elke dag om 00:00 UTC
     - cron: '0 8 * * *'
   workflow_dispatch:
+    # Hiermee kun je de actie handmatig starten via het 'Actions' tabblad
 
 jobs:
-  report:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      
+
     steps:
-      - name: Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      - name: Install Libraries
+      - name: Installeer afhankelijkheden
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy matplotlib scikit-learn requests
+          pip install requests pandas numpy matplotlib scikit-learn
 
-      - name: Draai Rapportage Script
+      - name: Draai rapportage script
         run: python daily_report.py
 
       - name: Push Resultaten naar Repo
         run: |
+          # Configureer de Git gebruiker
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
           
-          # Voeg de hele map toe. Als deze niet bestaat, gebeurt er niets.
-          git add Trading_details/ || echo "Geen map gevonden"
+          # Voeg de nieuwe map en bestanden toe
+          git add Trading_details/
           
-          # Commit alleen als er wijzigingen zijn
-          git commit -m "Daily update: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
-          
+          # Commit en push de wijzigingen
+          # De '|| echo' voorkomt dat de actie faalt als er geen wijzigingen zijn
+          git commit -m "Update rapportage en balans: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
           git push
