@@ -71,7 +71,7 @@ def get_xy(keys, d_dict, f_selected):
         X.append(df_f[f_selected].values[:-30]); yl.append(t_l); ys.append(t_s)
     return np.vstack(X), np.concatenate(yl), np.concatenate(ys)
 
-# 3. BACKTEST
+# 3. BACKTEST & STATISTIEKEN
 if __name__ == "__main__":
     dag_dict = prepare_trading_days()
     sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
@@ -100,34 +100,30 @@ if __name__ == "__main__":
         
         day_ret, active, current_sl = 0, False, BEST_SL
         real_date = str(dag_dict[current_key]['date'].iloc[0])
-        
-        # Bereken de inleg (exposure) voor deze dag
-        exposure = equity_val * (RISK_PER_TRADE / abs(BEST_SL))
-        
-        trade_info = {"date": real_date, "type": "None", "inleg_dollar": 0, "pct": 0, "balance": equity_val}
+        trade_info = {"date": real_date, "type": "None", "pct": 0, "balance": equity_val}
         pts = []
 
         for j in range(len(pl)):
             if not active and hours[j] < 23:
                 if pl[j] > t_l: 
                     ent_p, side, active = prices[j], 1, True
-                    trade_info.update({"type": "LONG", "inleg_dollar": exposure, "entry_p": prices[j]})
+                    trade_info.update({"type": "LONG", "entry_p": prices[j], "entry_t": times[j]})
                     pts.append({'t': times[j], 'p': prices[j], 'm': '^', 'c': 'green'})
                 elif ps[j] > t_s: 
                     ent_p, side, active = prices[j], -1, True
-                    trade_info.update({"type": "SHORT", "inleg_dollar": exposure, "entry_p": prices[j]})
+                    trade_info.update({"type": "SHORT", "entry_p": prices[j], "entry_t": times[j]})
                     pts.append({'t': times[j], 'p': prices[j], 'm': 'v', 'c': 'red'})
             elif active:
                 r = ((prices[j] - ent_p) / ent_p) * side
                 if r >= TRAILING_ACT: current_sl = max(current_sl, r - 0.002)
                 if r >= BEST_TP or r <= current_sl or j == len(pl)-1 or hours[j] >= 23:
                     day_ret = r
-                    trade_info.update({"exit_p": prices[j], "pct": r})
+                    trade_info.update({"exit_p": prices[j], "exit_t": times[j], "pct": r})
                     pts.append({'t': times[j], 'p': prices[j], 'm': 'x', 'c': 'black'})
                     active = False
                     break
 
-        # COMPOUND UPDATE
+        # COMPOUND BEREKENING
         gain_pct = day_ret * (RISK_PER_TRADE / abs(BEST_SL))
         old_balance = equity_val
         equity_val *= (1 + gain_pct)
@@ -138,10 +134,29 @@ if __name__ == "__main__":
         plt.figure(figsize=(10, 4))
         plt.plot(df_day['time'], df_day['close_bid'], color='gray', alpha=0.4)
         for p in pts: plt.scatter(p['t'], p['p'], color=p['c'], marker=p['m'], s=100)
-        plt.title(f"Dag {real_date} | Inleg: ${trade_info['inleg_dollar']:.0f}")
+        plt.title(f"Dag {real_date} | Return: {day_ret:.2%}")
         plt.savefig(os.path.join(output_dir, f"report_{real_date}.png"))
         plt.close()
 
-    # OPSLAAN LOG
+    # STATISTIEKEN BEREKENEN VOOR DE CSV
     df_res = pd.DataFrame(daily_logs)
+    total_return = (equity_val - initial_balance) / initial_balance
+    win_rate = len(df_res[df_res['pct'] > 0]) / len(df_res[df_res['type'] != "None"])
+    max_drawdown = (df_res['balance'].cummax() - df_res['balance']).max()
+
+    # TOEVOEGEN VAN SAMENVATTING AAN CSV
+    summary_row = {
+        "date": "SAMENVATTING", 
+        "type": f"Winrate: {win_rate:.1%}", 
+        "pct": f"Totale Return: {total_return:.2%}", 
+        "balance": equity_val,
+        "dollar_profit": f"Max Drawdown: ${max_drawdown:.2f}"
+    }
+    df_res = pd.concat([df_res, pd.DataFrame([summary_row])], ignore_index=True)
     df_res.to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
+
+    # EQUITY CURVE
+    plt.figure(figsize=(12, 6))
+    plt.plot(pd.DataFrame(daily_logs)['balance'], marker='o')
+    plt.title(f"Final Balance: ${equity_val:.2f} ({total_return:.1%} groei)")
+    plt.savefig(os.path.join(output_dir, "latest_overview.png"))
