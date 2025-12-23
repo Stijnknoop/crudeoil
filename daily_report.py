@@ -6,16 +6,16 @@ from sklearn.ensemble import RandomForestRegressor
 import re
 import os
 
-# Map voor output
+# Map voor output aanmaken
 output_dir = "Trading_details"
 os.makedirs(output_dir, exist_ok=True)
 
-# 1. DATA OPHALEN
+# 1. DATA OPHALEN & PREPROCESSING
 def read_latest_csv_from_crudeoil():
     user, repo, branch = "Stijnknoop", "crudeoil", "master"
     api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref={branch}"
     response = requests.get(api_url)
-    if response.status_code != 200: raise Exception("API Error")
+    if response.status_code != 200: raise Exception("GitHub API error")
     files = response.json()
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
     return pd.read_csv(csv_file['download_url'])
@@ -41,7 +41,7 @@ def prepare_trading_days():
         df.loc[df['time'] > row['end_time'], 'trading_day'] += 1
     return {f'dag_{i}': d.reset_index(drop=True) for i, (day, d) in enumerate(df.groupby('trading_day'), start=1) if len(d[d['has_data']]) > 200}
 
-# 2. INDICATOREN
+# 2. INDICATOREN & XY
 def add_features(df):
     df = df.copy()
     df['hour'], df['minute'] = df['time'].dt.hour, df['time'].dt.minute
@@ -71,7 +71,7 @@ def get_xy(keys, d_dict, f_selected):
         X.append(df_f[f_selected].values[:-30]); yl.append(t_l); ys.append(t_s)
     return np.vstack(X), np.concatenate(yl), np.concatenate(ys)
 
-# 3. BACKTEST & STATISTIEKEN
+# 3. HOOFDPROGRAMMA
 if __name__ == "__main__":
     dag_dict = prepare_trading_days()
     sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
@@ -101,9 +101,7 @@ if __name__ == "__main__":
         day_ret, active, current_sl = 0, False, BEST_SL
         real_date = str(dag_dict[current_key]['date'].iloc[0])
         
-        # Bepaal de inleg op basis van de compound balans en de risico-verhouding (5x balans bij deze SL/Risk)
         current_inleg = equity_val * (RISK_PER_TRADE / abs(BEST_SL))
-        
         trade_info = {"date": real_date, "type": "None", "inleg_dollar": 0, "pct": 0, "balance": equity_val}
         pts = []
 
@@ -111,57 +109,53 @@ if __name__ == "__main__":
             if not active and hours[j] < 23:
                 if pl[j] > t_l: 
                     ent_p, side, active = prices[j], 1, True
-                    trade_info.update({"type": "LONG", "inleg_dollar": current_inleg, "entry_p": prices[j], "entry_t": times[j]})
-                    pts.append({'t': times[j], 'p': prices[j], 'm': '^', 'c': 'green'})
+                    trade_info.update({"type": "LONG", "inleg_dollar": current_inleg, "entry_p": prices[j]})
+                    pts.append({'t': times[j], 'p': prices[j], 'm': '↑', 'c': 'green'})
                 elif ps[j] > t_s: 
                     ent_p, side, active = prices[j], -1, True
-                    trade_info.update({"type": "SHORT", "inleg_dollar": current_inleg, "entry_p": prices[j], "entry_t": times[j]})
-                    pts.append({'t': times[j], 'p': prices[j], 'm': 'v', 'c': 'red'})
+                    trade_info.update({"type": "SHORT", "inleg_dollar": current_inleg, "entry_p": prices[j]})
+                    pts.append({'t': times[j], 'p': prices[j], 'm': '↓', 'c': 'red'})
             elif active:
                 r = ((prices[j] - ent_p) / ent_p) * side
                 if r >= TRAILING_ACT: current_sl = max(current_sl, r - 0.002)
                 if r >= BEST_TP or r <= current_sl or j == len(pl)-1 or hours[j] >= 23:
                     day_ret = r
-                    trade_info.update({"exit_p": prices[j], "exit_t": times[j], "pct": r})
+                    trade_info.update({"exit_p": prices[j], "pct": r})
                     pts.append({'t': times[j], 'p': prices[j], 'm': 'x', 'c': 'black'})
                     active = False
                     break
 
-        # COMPOUND BEREKENING (Onveranderd)
         gain_pct = day_ret * (RISK_PER_TRADE / abs(BEST_SL))
         old_balance = equity_val
         equity_val *= (1 + gain_pct)
         trade_info.update({"dollar_profit": equity_val - old_balance, "balance": equity_val})
         daily_logs.append(trade_info)
 
-        # DAG PLOT
-        plt.figure(figsize=(10, 4))
-        plt.plot(df_day['time'], df_day['close_bid'], color='gray', alpha=0.4)
-        for p in pts: plt.scatter(p['t'], p['p'], color=p['c'], marker=p['m'], s=100)
-        plt.title(f"Dag {real_date} | Inleg: ${trade_info['inleg_dollar']:.0f}")
+        # DAG PLOT MET PIJLTJES
+        plt.figure(figsize=(12, 5))
+        plt.plot(df_day['time'], df_day['close_bid'], color='gray', alpha=0.3, label='Price')
+        for p in pts:
+            if p['m'] == '↑':
+                plt.annotate('', xy=(p['t'], p['p']), xytext=(p['t'], p['p']-0.05),
+                             arrowprops=dict(facecolor='green', shrink=0.05, width=2))
+            elif p['m'] == '↓':
+                plt.annotate('', xy=(p['t'], p['p']), xytext=(p['t'], p['p']+0.05),
+                             arrowprops=dict(facecolor='red', shrink=0.05, width=2))
+            else:
+                plt.scatter(p['t'], p['p'], color=p['c'], marker='x', s=100, label='Exit')
+        
+        plt.title(f"Report {real_date} | Inleg: ${trade_info['inleg_dollar']:.0f} | Winst: {day_ret:.2%}")
+        plt.grid(True, alpha=0.2)
         plt.savefig(os.path.join(output_dir, f"report_{real_date}.png"))
         plt.close()
 
-    # STATISTIEKEN BEREKENEN VOOR DE CSV
+    # LOG & OVERZICHT
     df_res = pd.DataFrame(daily_logs)
-    total_return = (equity_val - initial_balance) / initial_balance
-    win_rate = len(df_res[df_res['pct'] > 0]) / len(df_res[df_res['type'] != "None"])
-    max_drawdown = (df_res['balance'].cummax() - df_res['balance']).max()
-
-    # TOEVOEGEN VAN SAMENVATTING AAN CSV
-    summary_row = {
-        "date": "SAMENVATTING", 
-        "type": f"Winrate: {win_rate:.1%}", 
-        "inleg_dollar": "",
-        "pct": f"Totale Return: {total_return:.2%}", 
-        "balance": equity_val,
-        "dollar_profit": f"Max Drawdown: ${max_drawdown:.2f}"
-    }
-    df_res = pd.concat([df_res, pd.DataFrame([summary_row])], ignore_index=True)
     df_res.to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
-
-    # EQUITY CURVE
-    plt.figure(figsize=(12, 6))
-    plt.plot(pd.DataFrame(daily_logs)['balance'], marker='o')
-    plt.title(f"Final Balance: ${equity_val:.2f} ({total_return:.1%} groei)")
+    
+    plt.figure(figsize=(15, 7))
+    plt.plot(df_res['balance'], marker='o', color='dodgerblue')
+    plt.title(f"Final Balance: ${equity_val:.2f}")
+    plt.grid(True, alpha=0.3)
     plt.savefig(os.path.join(output_dir, "latest_overview.png"))
+    print(f"Klaar! Eindbalans: ${equity_val:.2f}")
