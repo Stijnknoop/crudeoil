@@ -3,13 +3,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestRegressor
-import re
 import os
 
-output_dir = "Trading_details"
-os.makedirs(output_dir, exist_ok=True)
 # ==================================================
-# 1. DATA OPHALEN & VOORBEREIDEN
+# 1. DATA OPHALEN
 # ==================================================
 def read_latest_csv_from_crudeoil():
     user, repo, branch = "Stijnknoop", "crudeoil", "master"
@@ -25,45 +22,28 @@ def prepare_trading_days():
     df = read_latest_csv_from_crudeoil()
     df['time'] = pd.to_datetime(df['time'])
     df = df.sort_values('time')
-    
-    # Gap-vulling (freq='min' ipv '1T')
     full_range = pd.date_range(df['time'].min(), df['time'].max(), freq='min')
     df = pd.DataFrame({'time': full_range}).merge(df, on='time', how='left')
     df['has_data'] = ~df['open_bid'].isna()
     df['date'] = df['time'].dt.date
-    
     valid_dates = df.groupby('date')['has_data'].any()
     df = df[df['date'].isin(valid_dates[valid_dates].index)].copy()
-    
     cols_to_ffill = df.columns.difference(['time', 'has_data', 'date'])
     df[cols_to_ffill] = df.groupby(df['has_data'].cumsum())[cols_to_ffill].ffill()
-    
-    dag_dict = {}
-    for date, group in df.groupby('date'):
-        if len(group[group['has_data']]) > 200:
-            dag_dict[str(date)] = group.reset_index(drop=True)
+    dag_dict = {str(date): group.reset_index(drop=True) 
+                for date, group in df.groupby('date') if len(group[group['has_data']]) > 200}
     return dag_dict
 
-# ==================================================
-# 2. FEATURES & XY GENERATOR
-# ==================================================
 def add_features(df):
     df = df.copy()
-    df['hour'], df['minute'] = df['time'].dt.hour, df['time'].dt.minute
-    df['day_progression'] = np.clip((df['hour'] * 60 + df['minute']) / 1380.0, 0, 1)
+    df['hour'] = df['time'].dt.hour
+    df['day_progression'] = (df['hour'] * 60 + df['time'].dt.minute) / 1440.0
     df['volatility_proxy'] = (df['high_bid'] - df['low_bid']).rolling(15).mean() / (df['close_bid'] + 1e-9)
     df['z_score_30m'] = (df['close_bid'] - df['close_bid'].rolling(30).mean()) / (df['close_bid'].rolling(30).std() + 1e-9)
     df['macd'] = df['close_bid'].ewm(span=12).mean() - df['close_bid'].ewm(span=26).mean()
     delta = df['close_bid'].diff()
     gain, loss = (delta.where(delta > 0, 0)).rolling(14).mean(), (-delta.where(delta < 0, 0)).rolling(14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
-    for tf in ['15min', '1h']:
-        freq = '15min' if tf == '15min' else '60min'
-        df_tf = df.resample(freq, on='time').agg({'close_bid': 'ohlc'}).shift(1)
-        df_tf.columns = [f'{tf}_{c}' for c in ['open', 'high', 'low', 'close']]
-        df['temp_key'] = df['time'].dt.floor(freq)
-        df = df.merge(df_tf, left_on='temp_key', right_index=True, how='left').drop(columns=['temp_key'])
-        df[f'{tf}_trend'] = (df['close_bid'] - df[f'{tf}_close']) / (df[f'{tf}_close'] + 1e-9)
     return df.ffill().bfill()
 
 def get_xy(keys, d_dict, f_selected):
@@ -77,26 +57,25 @@ def get_xy(keys, d_dict, f_selected):
     return np.vstack(X), np.concatenate(yl), np.concatenate(ys)
 
 # ==================================================
-# 3. MAIN EXECUTION (Sliding Window)
+# 3. EXECUTION
 # ==================================================
 if __name__ == "__main__":
     dag_dict = prepare_trading_days()
     sorted_keys = sorted(dag_dict.keys())
     
-    # Maak output map
     output_dir = "Trading_details"
     os.makedirs(output_dir, exist_ok=True)
 
-    # Ratio's
-    TRAIN_SIZE, VAL_SIZE = 30, 10
+    # JOUW NIEUWE INSTELLINGEN:
+    TRAIN_SIZE, VAL_SIZE = 24, 8
     total_needed = TRAIN_SIZE + VAL_SIZE
     test_keys = sorted_keys[total_needed:]
     
     if not test_keys:
-        print("Te weinig data beschikbaar.")
+        print(f"DEBUG: Totaal dagen in CSV: {len(sorted_keys)}. Nodig: {total_needed + 1}")
         exit(0)
 
-    f_selected = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
+    f_selected = ['z_score_30m', 'rsi', 'macd', 'day_progression', 'volatility_proxy', 'hour']
     equity_val = 10000.0
     daily_logs = []
 
@@ -106,8 +85,8 @@ if __name__ == "__main__":
         val_keys = sorted_keys[curr_idx - VAL_SIZE : curr_idx]
         
         X_t, yl_t, ys_t = get_xy(train_keys, dag_dict, f_selected)
-        m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_t, yl_t)
-        m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_t, ys_t)
+        m_l = RandomForestRegressor(n_estimators=100, max_depth=6).fit(X_t, yl_t)
+        m_s = RandomForestRegressor(n_estimators=100, max_depth=6).fit(X_t, ys_t)
         
         X_v, _, _ = get_xy(val_keys, dag_dict, f_selected)
         t_l, t_s = np.percentile(m_l.predict(X_v), 97), np.percentile(m_s.predict(X_v), 97)
@@ -116,8 +95,8 @@ if __name__ == "__main__":
         pl, ps = m_l.predict(df_day[f_selected].values[:-30]), m_s.predict(df_day[f_selected].values[:-30])
         prices, times, hours = df_day['close_bid'].values, df_day['time'].values, df_day['hour'].values
         
-        day_ret, active, current_sl = 0, False, -0.004
-        trade_info = {"date": current_date, "type": "None", "entry_p": None, "exit_p": None, "pct": 0, "entry_t": None, "exit_t": None}
+        day_ret, active, ent_p, side, current_sl = 0, False, 0, 0, -0.004
+        trade_info = {"date": current_date, "type": "None", "pct": 0}
 
         for j in range(len(pl)):
             if not active:
@@ -137,39 +116,28 @@ if __name__ == "__main__":
                     active = False; break
         
         equity_val *= (1 + (day_ret * 5))
-        trade_info.update({"dollar_profit": equity_val - (equity_val / (1 + (day_ret * 5))), "balance": equity_val})
+        trade_info.update({"dollar_profit": day_ret * 5 * (equity_val/(1+day_ret*5)), "balance": equity_val})
         daily_logs.append(trade_info)
 
-    # --- RAPPORTAGE OPSLAAN ---
     df_res = pd.DataFrame(daily_logs)
     df_res.to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
 
-    # Grafieken genereren
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), gridspec_kw={'height_ratios': [2, 1]})
-    
+    # Plotten
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10))
     last_date = test_keys[-1]
     df_plot = add_features(dag_dict[last_date]).dropna()
     last_trade = daily_logs[-1]
     
-    ax1.plot(df_plot['time'], df_plot['close_bid'], color='silver', label='Prijs')
+    ax1.plot(df_plot['time'], df_plot['close_bid'], color='silver')
     if last_trade["type"] != "None":
-        c = 'limegreen' if last_trade["type"] == "LONG" else 'crimson'
-        ax1.scatter(last_trade["entry_t"], last_trade["entry_p"], color=c, marker='^', s=150, label='Entry')
-        ax1.scatter(last_trade["exit_t"], last_trade["exit_p"], color='black', marker='x', s=150, label='Exit')
-    ax1.set_title(f"Trading Dag: {last_date}")
-    ax1.legend(); ax1.grid(True, alpha=0.2)
+        ax1.scatter(last_trade["entry_t"], last_trade["entry_p"], color='green', marker='^')
+        ax1.scatter(last_trade["exit_t"], last_trade["exit_p"], color='red', marker='x')
+    ax1.set_title(f"Trades op {last_date}")
 
-    ax2.plot(pd.to_datetime(df_res['date']), df_res['balance'], color='dodgerblue', lw=3)
-    ax2.fill_between(pd.to_datetime(df_res['date']), 10000, df_res['balance'], color='dodgerblue', alpha=0.1)
-    ax2.set_title(f"Balance Ontwikkeling (Eindstand: ${equity_val:.2f})")
-    ax2.grid(True, alpha=0.3)
-
+    ax2.plot(pd.to_datetime(df_res['date']), df_res['balance'], color='dodgerblue')
+    ax2.set_title(f"Balance: ${equity_val:.2f}")
+    
     plt.tight_layout()
-    # Opslaan met datum én als 'latest'
-    plt.savefig(os.path.join(output_dir, f"report_{last_date}.png"))
     plt.savefig(os.path.join(output_dir, "latest_overview.png"))
-    plt.close()
-    print(f"Rapportages opgeslagen in {output_dir}")
-
-
-df_res.to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
+    plt.savefig(os.path.join(output_dir, f"report_{last_date}.png"))
+    print(f"Klaar! Map {output_dir} is bijgewerkt.")
