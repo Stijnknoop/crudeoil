@@ -6,12 +6,12 @@ from sklearn.ensemble import RandomForestRegressor
 import re
 import os
 
-# Map voor output aanmaken
+# Map voor output
 output_dir = "Trading_details"
 os.makedirs(output_dir, exist_ok=True)
 
 # --------------------------------------------------
-# 1. DATA OPHALEN & GEAVANCEERDE DAG-GROEPERING
+# 1. DATA OPHALEN & PREPROCESSING
 # --------------------------------------------------
 def read_latest_csv_from_crudeoil():
     user, repo, branch = "Stijnknoop", "crudeoil", "master"
@@ -21,47 +21,36 @@ def read_latest_csv_from_crudeoil():
         raise Exception(f"GitHub API error: {response.status_code}")
     files = response.json()
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
-    if not csv_file:
-        raise Exception("Geen CSV gevonden")
     return pd.read_csv(csv_file['download_url'])
 
 def prepare_trading_days():
     df = read_latest_csv_from_crudeoil()
     df['time'] = pd.to_datetime(df['time'])
     df = df.sort_values('time')
-
-    # Volledige tijdreeks maken om gaten te vullen
     full_range = pd.date_range(df['time'].min(), df['time'].max(), freq='min')
     df = pd.DataFrame({'time': full_range}).merge(df, on='time', how='left')
     df['has_data'] = ~df['open_bid'].isna()
     df['date'] = df['time'].dt.date
-
-    # Alleen dagen met data behouden
     valid_dates = df.groupby('date')['has_data'].any()
     df = df[df['date'].isin(valid_dates[valid_dates].index)].copy()
-
-    # Data gaten opvullen (forward fill)
     cols_to_ffill = df.columns.difference(['time', 'has_data', 'date'])
     df[cols_to_ffill] = df.groupby(df['has_data'].cumsum())[cols_to_ffill].ffill()
 
-    # Slimme Gap detectie (23-uurs cyclus)
+    # Gap detectie
     df['gap_flag'] = (~df['has_data']) & (df['time'].dt.hour >= 20)
     df['gap_group'] = (df['gap_flag'] != df['gap_flag'].shift()).cumsum()
     gap_groups = df[df['gap_flag']].groupby('gap_group').agg(length=('time', 'count'), end_time=('time', 'last'))
     long_gaps = gap_groups[gap_groups['length'] >= 10]
-
     df['trading_day'] = 1
     for _, row in long_gaps.iterrows():
         df.loc[df['time'] > row['end_time'], 'trading_day'] += 1
 
-    # Filter dagen met te weinig data
-    dag_dict = {f'dag_{i}': d.reset_index(drop=True) 
-                for i, (day, d) in enumerate(df.groupby('trading_day'), start=1)
-                if len(d[d['has_data']]) > 200}
-    return dag_dict
+    return {f'dag_{i}': d.reset_index(drop=True) 
+            for i, (day, d) in enumerate(df.groupby('trading_day'), start=1)
+            if len(d[d['has_data']]) > 200}
 
 # --------------------------------------------------
-# 2. MODEL FUNCTIES (Indicatoren & XY)
+# 2. FEATURE ENGINEERING
 # --------------------------------------------------
 def add_features(df):
     df = df.copy()
@@ -70,7 +59,6 @@ def add_features(df):
     df['volatility_proxy'] = (df['high_bid'] - df['low_bid']).rolling(15).mean() / (df['close_bid'] + 1e-9)
     df['z_score_30m'] = (df['close_bid'] - df['close_bid'].rolling(30).mean()) / (df['close_bid'].rolling(30).std() + 1e-9)
     df['macd'] = df['close_bid'].ewm(span=12).mean() - df['close_bid'].ewm(span=26).mean()
-    
     delta = df['close_bid'].diff()
     gain, loss = (delta.where(delta > 0, 0)).rolling(14).mean(), (-delta.where(delta < 0, 0)).rolling(14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
@@ -89,27 +77,21 @@ def get_xy(keys, d_dict, f_selected):
     for k in keys:
         df_f = add_features(d_dict[k]).dropna()
         p = df_f['close_bid'].values
-        # Predictie horizon van 30 minuten
         t_l = [(np.max(p[i+1:i+31]) - p[i])/p[i] for i in range(len(df_f)-30)]
         t_s = [(p[i] - np.min(p[i+1:i+31]))/p[i] for i in range(len(df_f)-30)]
         X.append(df_f[f_selected].values[:-30]); yl.append(t_l); ys.append(t_s)
     return np.vstack(X), np.concatenate(yl), np.concatenate(ys)
 
 # --------------------------------------------------
-# 3. HOOFD PROGRAMMA (Hybride Logica)
+# 3. HOOFD PROGRAMMA
 # --------------------------------------------------
 if __name__ == "__main__":
     dag_dict = prepare_trading_days()
     sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
     
-    # Hybride Parameters
-    TARGET_TRAIN = 60
-    TARGET_VAL = 20
-    MIN_START = 32 # Begint na dag 32 (24 train + 8 val)
-    
+    TARGET_TRAIN, TARGET_VAL, MIN_START = 60, 20, 32
     if len(sorted_keys) <= MIN_START:
-        print(f"Nog niet genoeg data. Huidig: {len(sorted_keys)}, Nodig: {MIN_START + 1}")
-        exit(0)
+        print("Te weinig data."); exit(0)
 
     test_keys = sorted_keys[MIN_START:]
     f_selected = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
@@ -120,19 +102,13 @@ if __name__ == "__main__":
 
     for i, current_key in enumerate(test_keys):
         curr_idx = sorted_keys.index(current_key)
+        current_val_size = max(8, min(TARGET_VAL, int(curr_idx * 0.25)))
+        train_start = max(0, curr_idx - current_val_size - TARGET_TRAIN)
         
-        # --- HYBRIDE WINDOW BEPALING ---
-        current_val_size = min(TARGET_VAL, int(curr_idx * 0.25))
-        if current_val_size < 8: current_val_size = 8
-        
-        # Expanding start (0) tot Sliding start (afkap op 60)
-        train_start_idx = max(0, curr_idx - current_val_size - TARGET_TRAIN)
-        train_end_idx = curr_idx - current_val_size
-        
-        train_keys = sorted_keys[train_start_idx : train_end_idx]
-        val_keys = sorted_keys[train_end_idx : curr_idx]
+        train_keys = sorted_keys[train_start : curr_idx - current_val_size]
+        val_keys = sorted_keys[curr_idx - current_val_size : curr_idx]
 
-        # --- TRAINING & THRESHOLDS ---
+        # Training
         X_t, yl_t, ys_t = get_xy(train_keys, dag_dict, f_selected)
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_t, yl_t)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_t, ys_t)
@@ -140,54 +116,58 @@ if __name__ == "__main__":
         X_v, _, _ = get_xy(val_keys, dag_dict, f_selected)
         t_l, t_s = np.percentile(m_l.predict(X_v), 97), np.percentile(m_s.predict(X_v), 97)
         
-        # --- DAG SIMULATIE ---
+        # Simulatie dag
         df_day = add_features(dag_dict[current_key]).dropna()
         pl, ps = m_l.predict(df_day[f_selected].values[:-30]), m_s.predict(df_day[f_selected].values[:-30])
         prices, times, hours = df_day['close_bid'].values, df_day['time'].values, df_day['hour'].values
         
         day_ret, active, current_sl = 0, False, BEST_SL
-        trade_info = {"date": current_key, "type": "None", "pct": 0, "balance": equity_val}
+        real_date = str(dag_dict[current_key]['date'].iloc[0])
+        trade_info = {"date": real_date, "type": "None", "pct": 0, "balance": equity_val}
+        viz_points = [] # Voor de plot
 
         for j in range(len(pl)):
             if not active and hours[j] < 23:
                 if pl[j] > t_l: 
                     ent_p, side, active = prices[j], 1, True
-                    trade_info.update({"type": "LONG", "entry_p": prices[j], "entry_t": str(times[j])})
+                    trade_info.update({"type": "LONG", "entry_p": prices[j], "entry_t": times[j]})
+                    viz_points.append({'t': times[j], 'p': prices[j], 'm': '^', 'c': 'green', 'label': 'Entry Long'})
                 elif ps[j] > t_s: 
                     ent_p, side, active = prices[j], -1, True
-                    trade_info.update({"type": "SHORT", "entry_p": prices[j], "entry_t": str(times[j])})
+                    trade_info.update({"type": "SHORT", "entry_p": prices[j], "entry_t": times[j]})
+                    viz_points.append({'t': times[j], 'p': prices[j], 'm': 'v', 'c': 'red', 'label': 'Entry Short'})
             elif active:
                 r = ((prices[j] - ent_p) / ent_p) * side
-                # Trailing stop logica
                 if r >= TRAILING_ACT: current_sl = max(current_sl, r - 0.002)
-                # Exit condities
                 if r >= BEST_TP or r <= current_sl or j == len(pl)-1 or hours[j] >= 23:
                     day_ret = r
-                    trade_info.update({"exit_p": prices[j], "exit_t": str(times[j]), "pct": r})
+                    trade_info.update({"exit_p": prices[j], "exit_t": times[j], "pct": r})
+                    viz_points.append({'t': times[j], 'p': prices[j], 'm': 'x', 'c': 'black', 'label': 'Exit'})
                     active = False; break
         
-        # --- ACCOUNT UPDATE (De 13% Compound Logica) ---
+        # Account update
         gain_pct = day_ret * (RISK_PER_TRADE / abs(BEST_SL))
         dollar_profit = equity_val * gain_pct
         equity_val += dollar_profit
-        
         trade_info.update({"dollar_profit": dollar_profit, "balance": equity_val})
         daily_logs.append(trade_info)
 
-    # --- RESULTATEN OPSLAAN ---
+        # --- DAG PLOT MAKEN ---
+        plt.figure(figsize=(12, 5))
+        plt.plot(df_day['time'], df_day['close_bid'], color='silver', alpha=0.6)
+        for pt in viz_points:
+            plt.scatter(pt['t'], pt['p'], color=pt['c'], marker=pt['m'], s=100, zorder=5)
+        plt.title(f"Trading Day: {real_date} | Day Profit: {day_ret:.2%}")
+        plt.grid(True, alpha=0.2)
+        plt.savefig(os.path.join(output_dir, f"report_{real_date}.png"))
+        plt.close()
+
+    # --- OPSLAAN OVERZICHT ---
     df_res = pd.DataFrame(daily_logs)
     df_res.to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
-
-    # Plot genereren
+    
     plt.figure(figsize=(15, 7))
-    plt.plot(df_res['balance'], marker='o', color='dodgerblue', label='Equity Curve')
-    plt.title(f"Hybrid Strategy Balance: ${equity_val:.2f}")
+    plt.plot(df_res['balance'], marker='o', color='dodgerblue')
+    plt.title(f"Final Balance: ${equity_val:.2f}")
     plt.grid(True, alpha=0.3)
-    plt.legend()
-    
-    # Gebruik echte datum laatste dag voor bestandsnaam
-    last_real_date = str(dag_dict[test_keys[-1]]['date'].iloc[0])
-    plt.savefig(os.path.join(output_dir, f"report_{last_real_date}.png"))
     plt.savefig(os.path.join(output_dir, "latest_overview.png"))
-    
-    print(f"Klaar! Laatste training: {len(train_keys)} dagen. Balans: ${equity_val:.2f}")
