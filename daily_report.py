@@ -44,27 +44,21 @@ def prepare_trading_days():
 # 2. FEATURE ENGINEERING (LEAK-FREE)
 def add_features(df):
     df = df.copy().sort_values('time')
-    
-    # Basis indicatoren
     df['hour'] = df['time'].dt.hour
     df['volatility'] = (df['high_bid'] - df['low_bid']).rolling(15).mean()
     df['macd'] = df['close_bid'].ewm(span=12).mean() - df['close_bid'].ewm(span=26).mean()
-    
     delta = df['close_bid'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
     
-    # 1H Trend (Shifted om leakage te voorkomen)
     df_1h = df.resample('1h', on='time').agg({'close_bid': 'last'}).shift(1)
     df_1h.columns = ['last_hour_close']
     df['floor_hour'] = df['time'].dt.floor('1h')
     df = df.merge(df_1h, left_on='floor_hour', right_index=True, how='left').drop(columns=['floor_hour'])
 
-    # CRUCIAAL: Shift de feature kolommen om execution lag te simuleren (Trade op t+1 gebaseerd op t)
     f_cols = ['hour', 'volatility', 'macd', 'rsi', 'last_hour_close']
     df[f_cols] = df[f_cols].shift(1)
-    
     return df.dropna()
 
 def get_xy(keys, d_dict, f_selected):
@@ -73,7 +67,6 @@ def get_xy(keys, d_dict, f_selected):
         df_f = add_features(d_dict[k])
         if len(df_f) < 60: continue
         p = df_f['close_bid'].values
-        # Targets (toekomst 30 min)
         t_l = [(np.max(p[i+1:i+31]) - p[i])/p[i] for i in range(len(p)-30)]
         t_s = [(p[i] - np.min(p[i+1:i+31]))/p[i] for i in range(len(p)-30)]
         X.append(df_f[f_selected].values[:-30]); yl.append(t_l); ys.append(t_s)
@@ -89,7 +82,6 @@ if __name__ == "__main__":
     equity_val = initial_balance
     daily_logs = []
     
-    # Start na training buffer
     for i in range(60, len(sorted_keys)):
         current_key = sorted_keys[i]
         X_t, yl_t, ys_t = get_xy(sorted_keys[i-40:i], dag_dict, f_selected)
@@ -97,16 +89,22 @@ if __name__ == "__main__":
         m_s = RandomForestRegressor(n_estimators=50, max_depth=5, n_jobs=-1).fit(X_t, ys_t)
         
         df_today = add_features(dag_dict[current_key])
+        if df_today.empty: continue
+        
         pl, ps = m_l.predict(df_today[f_selected]), m_s.predict(df_today[f_selected])
         prices, times = df_today['close_bid'].values, df_today['time'].values
         
-        t_l, t_s = np.percentile(pl, 95), np.percentile(ps, 95)
+        t_l, t_s = np.percentile(pl, 90), np.percentile(ps, 90)
         active, day_ret = False, 0
         SL, TP = -0.004, 0.005
         current_inleg = equity_val * (0.02 / abs(SL))
         
         real_date = str(times[0])[:10]
-        trade_info = {"date": real_date, "type": "None", "inleg_dollar": 0, "pct": 0, "balance": equity_val}
+        # Altijd alle kolommen vullen om KeyErrors te voorkomen
+        trade_info = {
+            "date": real_date, "type": "None", "inleg_dollar": 0, 
+            "pct": 0.0, "balance": equity_val, "entry_p": 0, "exit_p": 0, "dollar_profit": 0.0
+        }
         pts = []
 
         for j in range(len(pl)-30):
@@ -123,14 +121,14 @@ if __name__ == "__main__":
                 r = ((prices[j] - ent_p) / ent_p) * side
                 if r <= SL or r >= TP or j == len(pl)-31:
                     day_ret = r
-                    trade_info.update({"exit_p": prices[j], "pct": r})
+                    trade_info.update({"exit_p": prices[j], "pct": float(day_ret)})
                     pts.append({'t': times[j], 'p': prices[j], 'm': 'x', 'c': 'black'})
                     active = False
                     break
 
+        old_bal = equity_val
         equity_val *= (1 + (day_ret * (0.02 / abs(SL))))
-        trade_info["balance"] = equity_val
-        trade_info["dollar_profit"] = equity_val - (equity_val / (1 + (day_ret * (0.02 / abs(SL))))) if day_ret !=0 else 0
+        trade_info.update({"balance": equity_val, "dollar_profit": equity_val - old_bal})
         daily_logs.append(trade_info)
         
         # Plotting
@@ -145,9 +143,17 @@ if __name__ == "__main__":
         plt.savefig(os.path.join(output_dir, f"report_{real_date}.png"))
         plt.close()
 
-    # CSV Summary
-    df_res = pd.DataFrame(daily_logs)
-    wr = len(df_res[df_res['pct'] > 0]) / max(1, len(df_res[df_res['type'] != "None"]))
-    summary = {"date": "SAMENVATTING", "type": f"WR: {wr:.1%}", "balance": equity_val, "pct": f"Tot: {((equity_val-10000)/10000):.1%}"}
-    df_res = pd.concat([df_res, pd.DataFrame([summary])], ignore_index=True)
-    df_res.to_csv(os.path.join(output_dir, "trading_log.csv"), index=False)
+    # CSV Summary met veiligheidscheck op kolommen
+    if daily_logs:
+        df_res = pd.DataFrame(daily_logs)
+        wr = len(df_res[df_res['pct'] > 0]) / max(1, len(df_res[df_res['type'] != "None"]))
+        summary = {
+            "date": "SAMENVATTING", "type": f"WR: {wr:.1%}", 
+            "balance": equity_val, "pct": f"Tot: {((equity_val-10000)/10000):.1%}",
+            "inleg_dollar": "", "entry_p": "", "exit_p": "", "dollar_profit": ""
+        }
+        df_res = pd.concat([df_res, pd.DataFrame([summary])], ignore_index=True)
+        df_res.to_csv(os.path.join(output_dir, "trading_log.csv"), index=False)
+        print(f"Klaar! Eindbalans: ${equity_val:.2f}")
+    else:
+        print("Geen data gevonden om te verwerken.")
