@@ -6,7 +6,7 @@ from sklearn.ensemble import RandomForestRegressor
 import re
 import os
 
-# Map voor output aanmaken
+# Map voor output
 output_dir = "Trading_details"
 os.makedirs(output_dir, exist_ok=True)
 
@@ -35,7 +35,6 @@ def prepare_trading_days():
     cols_to_ffill = df.columns.difference(['time', 'has_data', 'date'])
     df[cols_to_ffill] = df.groupby(df['has_data'].cumsum())[cols_to_ffill].ffill()
 
-    # Gap handling
     df['gap_flag'] = (~df['has_data']) & (df['time'].dt.hour >= 20)
     df['gap_group'] = (df['gap_flag'] != df['gap_flag'].shift()).cumsum()
     gap_groups = df[df['gap_flag']].groupby('gap_group').agg(length=('time', 'count'), end_time=('time', 'last'))
@@ -50,14 +49,22 @@ def prepare_trading_days():
 
 def add_features(df):
     df = df.copy()
-    df['hour'] = df['time'].dt.hour
-    df['day_progression'] = np.clip((df['hour'] * 60 + df['time'].dt.minute) / 1380.0, 0, 1)
+    df['hour'], df['minute'] = df['time'].dt.hour, df['time'].dt.minute
+    df['day_progression'] = np.clip((df['hour'] * 60 + df['minute']) / 1380.0, 0, 1)
     df['volatility_proxy'] = (df['high_bid'] - df['low_bid']).rolling(15).mean() / (df['close_bid'] + 1e-9)
     df['z_score_30m'] = (df['close_bid'] - df['close_bid'].rolling(30).mean()) / (df['close_bid'].rolling(30).std() + 1e-9)
     df['macd'] = df['close_bid'].ewm(span=12).mean() - df['close_bid'].ewm(span=26).mean()
     delta = df['close_bid'].diff()
     gain, loss = (delta.where(delta > 0, 0)).rolling(14).mean(), (-delta.where(delta < 0, 0)).rolling(14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+    
+    for tf in ['15min', '1h']:
+        freq = '15min' if tf == '15min' else '60min'
+        df_tf = df.resample(freq, on='time').agg({'close_bid': 'ohlc'}).shift(1)
+        df_tf.columns = [f'{tf}_{c}' for c in ['open', 'high', 'low', 'close']]
+        df['temp_key'] = df['time'].dt.floor(freq)
+        df = df.merge(df_tf, left_on='temp_key', right_index=True, how='left').drop(columns=['temp_key'])
+        df[f'{tf}_trend'] = (df['close_bid'] - df[f'{tf}_close']) / (df[f'{tf}_close'] + 1e-9)
     return df.ffill().bfill()
 
 def get_xy(keys, d_dict, f_selected):
@@ -79,9 +86,10 @@ if __name__ == "__main__":
     
     TARGET_TRAIN, TARGET_VAL, MIN_START = 60, 20, 32
     test_keys = sorted_keys[MIN_START:]
-    f_selected = ['z_score_30m', 'rsi', 'macd', 'day_progression', 'volatility_proxy', 'hour']
+    f_selected = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
+    
     equity_val = 10000.0
-    RISK_PER_TRADE, BEST_SL = 0.02, -0.004
+    BEST_TP, BEST_SL, RISK_PER_TRADE, TRAILING_ACT = 0.005, -0.004, 0.02, 0.0025
     daily_logs = []
 
     for i, current_key in enumerate(test_keys):
@@ -89,62 +97,63 @@ if __name__ == "__main__":
         current_val_size = max(8, min(TARGET_VAL, int(curr_idx * 0.25)))
         train_start = max(0, curr_idx - current_val_size - TARGET_TRAIN)
         
-        train_keys = sorted_keys[train_start : curr_idx - current_val_size]
-        val_keys = sorted_keys[curr_idx - current_val_size : curr_idx]
-
-        X_t, yl_t, ys_t = get_xy(train_keys, dag_dict, f_selected)
-        m_l = RandomForestRegressor(n_estimators=100, max_depth=6).fit(X_t, yl_t)
-        m_s = RandomForestRegressor(n_estimators=100, max_depth=6).fit(X_t, ys_t)
+        X_t, yl_t, ys_t = get_xy(sorted_keys[train_start : curr_idx - current_val_size], dag_dict, f_selected)
+        m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_t, yl_t)
+        m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_t, ys_t)
         
-        X_v, _, _ = get_xy(val_keys, dag_dict, f_selected)
+        X_v, _, _ = get_xy(sorted_keys[curr_idx - current_val_size : curr_idx], dag_dict, f_selected)
         t_l, t_s = np.percentile(m_l.predict(X_v), 97), np.percentile(m_s.predict(X_v), 97)
         
         df_day = add_features(dag_dict[current_key]).dropna()
         pl, ps = m_l.predict(df_day[f_selected].values[:-30]), m_s.predict(df_day[f_selected].values[:-30])
         prices, times, hours = df_day['close_bid'].values, df_day['time'].values, df_day['hour'].values
         
-        day_ret_total, active, current_sl = 0, False, BEST_SL
-        trades_this_day = []
-        
-        for j in range(len(pl)):
-            if not active and hours[j] < 22:
-                if pl[j] > t_l: 
-                    ent_p, side, active = prices[j], 1, True
-                    entry_t = times[j]
-                elif ps[j] > t_s: 
-                    ent_p, side, active = prices[j], -1, True
-                    entry_t = times[j]
-            elif active:
-                r = ((prices[j] - ent_p) / ent_p) * side
-                if r >= 0.0025: current_sl = max(current_sl, r - 0.002)
-                if r >= 0.005 or r <= current_sl or j == len(pl)-1 or hours[j] >= 23:
-                    gain_pct = r * (RISK_PER_TRADE / abs(BEST_SL))
-                    day_ret_total += gain_pct
-                    trades_this_day.append({'entry_t': entry_t, 'entry_p': ent_p, 'exit_t': times[j], 'exit_p': prices[j], 'type': 'LONG' if side==1 else 'SHORT'})
-                    active = False # Verwijder 'break' hier als je meer trades per dag wilt toelaten
-
-        equity_val *= (1 + day_ret_total)
+        day_ret, active, current_sl = 0, False, BEST_SL
         real_date = str(dag_dict[current_key]['date'].iloc[0])
-        daily_logs.append({"date": real_date, "balance": equity_val, "dollar_profit": equity_val * (day_ret_total/(1+day_ret_total))})
+        trade_info = {"date": real_date, "type": "None", "pct": 0, "balance": equity_val}
+        trade_points = []
 
-        # --- MAAK DAGELIJKSE PNG ---
+        for j in range(len(pl)):
+            if not active:
+                if hours[j] < 23:
+                    if pl[j] > t_l: 
+                        ent_p, side, active = prices[j], 1, True
+                        trade_info.update({"type": "LONG", "entry_p": prices[j], "entry_t": times[j]})
+                        trade_points.append({'t': times[j], 'p': prices[j], 'm': '^', 'c': 'green'})
+                    elif ps[j] > t_s: 
+                        ent_p, side, active = prices[j], -1, True
+                        trade_info.update({"type": "SHORT", "entry_p": prices[j], "entry_t": times[j]})
+                        trade_points.append({'t': times[j], 'p': prices[j], 'm': 'v', 'c': 'red'})
+            else:
+                r = ((prices[j] - ent_p) / ent_p) * side
+                if r >= TRAILING_ACT: current_sl = max(current_sl, r - 0.002)
+                
+                # Exit condities (TP, SL of tijd)
+                if r >= BEST_TP or r <= current_sl or j == len(pl)-1 or hours[j] >= 23:
+                    day_ret = r
+                    trade_info.update({"exit_p": prices[j], "exit_t": times[j], "pct": r})
+                    trade_points.append({'t': times[j], 'p': prices[j], 'm': 'x', 'c': 'black'})
+                    active = False
+                    break # STOP NA 1 TRADE
+
+        gain_pct = day_ret * (RISK_PER_TRADE / abs(BEST_SL))
+        equity_val *= (1 + gain_pct)
+        trade_info.update({"dollar_profit": equity_val * (gain_pct/(1+gain_pct)), "balance": equity_val})
+        daily_logs.append(trade_info)
+
+        # --- PNG RAPPORTAGE PER DAG ---
         plt.figure(figsize=(12, 5))
-        plt.plot(df_day['time'], df_day['close_bid'], color='silver', alpha=0.6, label='Price')
-        for tr in trades_this_day:
-            color = 'green' if tr['type'] == 'LONG' else 'red'
-            plt.scatter(tr['entry_t'], tr['entry_p'], color=color, marker='^', s=100)
-            plt.scatter(tr['exit_t'], tr['exit_p'], color='black', marker='x', s=100)
-        plt.title(f"Report {real_date} | Profit: {day_ret_total:.2%}")
+        plt.plot(df_day['time'], df_day['close_bid'], color='silver', alpha=0.5, label='Koers')
+        for tp in trade_points:
+            plt.scatter(tp['t'], tp['p'], color=tp['c'], marker=tp['m'], s=150, zorder=5)
+        plt.title(f"Dag Rapport: {real_date} | Win/Verlies: {day_ret:.2%}")
         plt.grid(True, alpha=0.2)
         plt.savefig(os.path.join(output_dir, f"report_{real_date}.png"))
         plt.close()
 
-    # Totaaloverzicht & CSV
-    df_res = pd.DataFrame(daily_logs)
-    df_res.to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
-    
+    # --- FINALE EXPORT ---
+    pd.DataFrame(daily_logs).to_csv(os.path.join(output_dir, 'trading_log.csv'), index=False)
     plt.figure(figsize=(12, 6))
-    plt.plot(df_res['date'], df_res['balance'], marker='o')
-    plt.title("Equity Curve - Total")
-    plt.xticks(rotation=45)
+    plt.plot([d['balance'] for d in daily_logs], label='Account Balans')
+    plt.title("Equity Curve (Hybride Window)")
     plt.savefig(os.path.join(output_dir, "latest_overview.png"))
