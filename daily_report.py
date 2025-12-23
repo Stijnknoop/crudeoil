@@ -161,4 +161,3 @@ if __name__ == "__main__":
     plt.title(f"Final Balance: ${equity_val:.2f} ({total_return:.1%} groei)")
     plt.savefig(os.path.join(output_dir, "latest_overview.png"))
 
-
