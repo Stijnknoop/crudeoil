@@ -100,18 +100,22 @@ if __name__ == "__main__":
         
         day_ret, active, current_sl = 0, False, BEST_SL
         real_date = str(dag_dict[current_key]['date'].iloc[0])
-        trade_info = {"date": real_date, "type": "None", "pct": 0, "balance": equity_val}
+        
+        # Bepaal de inleg op basis van de compound balans en de risico-verhouding (5x balans bij deze SL/Risk)
+        current_inleg = equity_val * (RISK_PER_TRADE / abs(BEST_SL))
+        
+        trade_info = {"date": real_date, "type": "None", "inleg_dollar": 0, "pct": 0, "balance": equity_val}
         pts = []
 
         for j in range(len(pl)):
             if not active and hours[j] < 23:
                 if pl[j] > t_l: 
                     ent_p, side, active = prices[j], 1, True
-                    trade_info.update({"type": "LONG", "entry_p": prices[j], "entry_t": times[j]})
+                    trade_info.update({"type": "LONG", "inleg_dollar": current_inleg, "entry_p": prices[j], "entry_t": times[j]})
                     pts.append({'t': times[j], 'p': prices[j], 'm': '^', 'c': 'green'})
                 elif ps[j] > t_s: 
                     ent_p, side, active = prices[j], -1, True
-                    trade_info.update({"type": "SHORT", "entry_p": prices[j], "entry_t": times[j]})
+                    trade_info.update({"type": "SHORT", "inleg_dollar": current_inleg, "entry_p": prices[j], "entry_t": times[j]})
                     pts.append({'t': times[j], 'p': prices[j], 'm': 'v', 'c': 'red'})
             elif active:
                 r = ((prices[j] - ent_p) / ent_p) * side
@@ -123,7 +127,7 @@ if __name__ == "__main__":
                     active = False
                     break
 
-        # COMPOUND BEREKENING
+        # COMPOUND BEREKENING (Onveranderd)
         gain_pct = day_ret * (RISK_PER_TRADE / abs(BEST_SL))
         old_balance = equity_val
         equity_val *= (1 + gain_pct)
@@ -134,7 +138,7 @@ if __name__ == "__main__":
         plt.figure(figsize=(10, 4))
         plt.plot(df_day['time'], df_day['close_bid'], color='gray', alpha=0.4)
         for p in pts: plt.scatter(p['t'], p['p'], color=p['c'], marker=p['m'], s=100)
-        plt.title(f"Dag {real_date} | Return: {day_ret:.2%}")
+        plt.title(f"Dag {real_date} | Inleg: ${trade_info['inleg_dollar']:.0f}")
         plt.savefig(os.path.join(output_dir, f"report_{real_date}.png"))
         plt.close()
 
@@ -148,6 +152,7 @@ if __name__ == "__main__":
     summary_row = {
         "date": "SAMENVATTING", 
         "type": f"Winrate: {win_rate:.1%}", 
+        "inleg_dollar": "",
         "pct": f"Totale Return: {total_return:.2%}", 
         "balance": equity_val,
         "dollar_profit": f"Max Drawdown: ${max_drawdown:.2f}"
