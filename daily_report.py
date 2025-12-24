@@ -151,34 +151,37 @@ for i, current_key in enumerate(test_keys):
     times, hours = df_day['time'].values, df_day['hour'].values
     
     day_ret, active = 0, False
-    trade_info = {"day": current_key, "entry_time": None, "exit_time": None, "side": None, "entry_p": None, "exit_p": None, "return": 0}
+    trade_info = {"day": current_key, "entry_time": None, "exit_time": None, "side": None, "entry_p": None, "exit_p": None, "return": 0, "exit_reason": "No Trade"}
 
     for j in range(len(bids) - 1):
         if not active:
             if hours[j] < 23:
                 if p_l[j] > t_l:
-                    # LONG: Open op ASK
                     ent_p, side, active = asks[j], 1, True
                     trade_info.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
                     curr_sl = BEST_SL
                 elif p_s[j] > t_s:
-                    # SHORT: Open op BID
                     ent_p, side, active = bids[j], -1, True
                     trade_info.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
                     curr_sl = BEST_SL
         else:
-            # Rendement berekenen op basis van BID (voor Long) of ASK (voor Short)
-            if side == 1:
-                r = (bids[j] - ent_p) / ent_p
-            else:
-                r = (ent_p - asks[j]) / ent_p
+            if side == 1: r = (bids[j] - ent_p) / ent_p
+            else: r = (ent_p - asks[j]) / ent_p
             
             if r >= TRAILING_ACT: curr_sl = max(curr_sl, r - 0.002)
             
-            if r >= BEST_TP or r <= curr_sl or hours[j] >= 23 or j == len(bids)-2:
+            # Bepaal exit reden
+            is_data_end = (j == len(bids)-2)
+            is_time_end = (hours[j] >= 23)
+            
+            if r >= BEST_TP or r <= curr_sl or is_time_end or is_data_end:
+                exit_reason = "TP/SL"
+                if is_time_end: exit_reason = "EOD (23h)"
+                if is_data_end and not (r >= BEST_TP or r <= curr_sl): exit_reason = "Data End (Pending)"
+                
                 day_ret = r
                 exit_p = bids[j] if side == 1 else asks[j]
-                trade_info.update({"exit_time": str(times[j]), "exit_p": exit_p, "return": r})
+                trade_info.update({"exit_time": str(times[j]), "exit_p": exit_p, "return": r, "exit_reason": exit_reason})
                 trade_logs.append(trade_info)
                 active = False
                 break
@@ -190,7 +193,7 @@ for i, current_key in enumerate(test_keys):
         c = 'green' if trade_info["return"] > 0 else 'red'
         plt.scatter(pd.to_datetime(trade_info["entry_time"]), trade_info["entry_p"], marker='^', color='blue', label='Entry', zorder=5)
         plt.scatter(pd.to_datetime(trade_info["exit_time"]), trade_info["exit_p"], marker='x', color=c, label='Exit', zorder=5)
-    plt.title(f"{current_key} | Ret: {day_ret:.4%}")
+    plt.title(f"{current_key} | Ret: {day_ret:.4%} | Reason: {trade_info.get('exit_reason')}")
     plt.savefig(os.path.join(plots_dir, f"plot_{current_key}.png"))
     plt.close()
 
