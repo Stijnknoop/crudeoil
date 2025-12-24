@@ -5,20 +5,16 @@ import os
 import re
 from sklearn.ensemble import RandomForestRegressor
 
-# Voorkom GUI-fouten op GitHub Actions
 import matplotlib
 matplotlib.use('Agg')
 
-# ==================================================
-# 1. DATA INLEZEN & OPSCHONEN
-# ==================================================
+# 1. DATA OPHALEN
 def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
     repo = "crudeoil"
-    branch = "master"
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
-    api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref={branch}"
+    api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref=master"
     response = requests.get(api_url, headers=headers)
     if response.status_code != 200:
         raise Exception(f"GitHub API error: {response.status_code}")
@@ -26,12 +22,12 @@ def read_latest_csv_from_crudeoil():
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
     return pd.read_csv(csv_file['download_url'])
 
-print("Data ophalen uit Crude Oil repo...")
+print("--- START ANALYSE ---")
 df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'])
 df_raw = df_raw.sort_values('time')
 
-# Gaps detecteren en dagen groeperen
+# Data groeperen in dagen
 full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='1T')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
@@ -57,9 +53,7 @@ for _, row in long_gaps.iterrows():
 dag_dict = {f'dag_{i}': d[d['has_data']].reset_index(drop=True) 
             for i, (day, d) in enumerate(df.groupby('trading_day'), start=1)}
 
-# ==================================================
 # 2. FEATURE ENGINEERING
-# ==================================================
 def add_features(df_in):
     df = df_in.copy().sort_values('time')
     df['hour'] = df['time'].dt.hour
@@ -69,9 +63,7 @@ def add_features(df_in):
     ma30, std30 = close.rolling(30).mean(), close.rolling(30).std()
     df['z_score_30m'] = (close - ma30) / (std30 + 1e-9)
     df['macd'] = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    delta = close.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    delta = close.diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
     for tf, freq in [('15min', '15min'), ('1h', '60min')]:
         df_tf = df.set_index('time')['close_bid'].resample(freq).last().shift(1).rename(f'prev_{tf}_close')
@@ -97,37 +89,38 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
-# ==================================================
-# 3. INCREMENTELE UPDATE (PENDING VERWIJDER LOGICA)
-# ==================================================
+# 3. DE PENDING-REPAIR LOGICA
 output_dir = "Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
 
+# Zorg dat de map bestaat
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+
 if os.path.exists(log_path):
+    print(f"Log gevonden. Bezig met opschonen van pending entries...")
     existing_logs = pd.read_csv(log_path)
-    # CRUCIALE STAP: Verwijder de pending regel zodat we hem vers kunnen berekenen
-    print("Oude pending data verwijderen uit log...")
+    # FORCEER VERWIJDERING: We houden alleen trades over die NIET pending zijn
+    initial_count = len(existing_logs)
     existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"].copy()
+    print(f"Verwijderd: {initial_count - len(existing_logs)} pending regels.")
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
+    print("Geen bestaande log gevonden. Starten met een nieuwe lijst.")
     existing_logs, processed_days = pd.DataFrame(), set()
 
-# Bepaal welke dagen we moeten draaien (alle dagen die niet in onze 'schone' lijst staan)
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 new_days = [k for k in sorted_keys if k not in processed_days]
 
 if not new_days:
-    print("Geen nieuwe of pending dagen gevonden.")
+    print("Resultaat: Geen nieuwe dagen of pending dagen om te verwerken.")
 else:
-    print(f"Start analyse voor: {new_days}")
+    print(f"Nieuwe dagen voor analyse: {new_days}")
     new_records = []
-    BEST_TP, BEST_SL = 0.005, -0.004
-    
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
-        if idx < 40: continue # Training buffer
+        if idx < 40: continue
         
-        # Snel trainen op de 40 dagen voor de huidige dag
         train_keys = sorted_keys[max(0, idx-40):idx-5]
         X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, yl_tr)
@@ -145,24 +138,24 @@ else:
                     if p_l[j] > t_l:
                         ent_p, side, active = asks[j], 1, True
                         day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
-                        curr_sl = BEST_SL
+                        curr_sl = -0.004
                     elif p_s[j] > t_s:
                         ent_p, side, active = bids[j], -1, True
                         day_res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
-                        curr_sl = BEST_SL
+                        curr_sl = -0.004
             else:
                 r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
                 if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
-                
                 is_data_end, is_time_end = (j == len(bids)-2), (hours[j] >= 23)
-                if r >= BEST_TP or r <= curr_sl or is_time_end or is_data_end:
+                if r >= 0.005 or r <= curr_sl or is_time_end or is_data_end:
                     reason = "TP/SL"
                     if is_time_end: reason = "EOD (23h)"
-                    if is_data_end and not (r >= BEST_TP or r <= curr_sl): reason = "Data End (Pending)"
+                    if is_data_end and not (r >= 0.005 or r <= curr_sl): reason = "Data End (Pending)"
                     day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": reason})
                     active = False; break
         new_records.append(day_res)
 
-    # Voeg nieuwe resultaten toe aan de bestaande lijst en sla op
-    pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True).to_csv(log_path, index=False)
-    print("Log succesvol bijgewerkt.")
+    # COMBINEREN EN OPSLAAN
+    final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
+    final_df.to_csv(log_path, index=False)
+    print(f"--- SUCCES --- CSV bijgewerkt op {log_path}. Totaal regels nu: {len(final_df)}")
