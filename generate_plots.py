@@ -83,7 +83,6 @@ def generate_performance_plots():
     ax1.legend(loc='upper left')
     
     fig.autofmt_xdate()
-    # De equity curve wordt altijd overschreven
     plt.savefig(os.path.join(log_dir, "equity_curve.png"), bbox_inches='tight', dpi=150)
     plt.close()
     print("Equity curve gegenereerd.")
@@ -91,20 +90,22 @@ def generate_performance_plots():
     # --- 2. INDIVIDUELE DAG-PLOTS ---
     if raw_data is not None:
         today = datetime.date.today()
-        tomorrow = today + datetime.timedelta(days=1)
+        yesterday = today - datetime.timedelta(days=1)
 
         for _, trade in df_trades.iterrows():
             trade_date = trade['entry_time'].date()
             file_name = f"{trade_date}.png"
             file_path = os.path.join(plot_dir, file_name)
             
-            # LOGICA: Overschrijf als het vandaag of morgen is, anders alleen als bestand niet bestaat
-            if os.path.exists(file_path) and trade_date < today:
-                continue
+            # --- VERWIJDER LOGICA: Altijd gisteren en vandaag opnieuw doen ---
+            if trade_date >= yesterday:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    print(f"Oude plot verwijderd voor refresh: {file_name}")
             
-            # Verwijder oude versie als het vandaag/morgen is voor een schone lei
+            # Sla over als de plot al bestaat (voor data ouder dan gisteren)
             if os.path.exists(file_path):
-                os.remove(file_path)
+                continue
                 
             day_data = raw_data[raw_data['time'].dt.date == trade_date].copy()
             
@@ -123,7 +124,7 @@ def generate_performance_plots():
                 plt.legend()
                 plt.savefig(file_path, bbox_inches='tight')
                 plt.close()
-                print(f"Dagplot bijgewerkt/opgeslagen: {file_name}")
+                print(f"Dagplot gegenereerd: {file_name}")
 
 if __name__ == "__main__":
     generate_performance_plots()
