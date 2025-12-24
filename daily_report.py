@@ -11,22 +11,36 @@ import matplotlib
 matplotlib.use('Agg')
 
 # ==================================================
-# 1. DATA INLEZEN & OPSCHONEN
+# 1. DATA INLEZEN MET AUTHENTICATIE
 # ==================================================
 def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
     repo = "crudeoil"
     branch = "master"
+    
+    # Gebruik een token om 403 Rate Limit errors te voorkomen in GitHub Actions
+    token = os.getenv("GITHUB_TOKEN")
+    headers = {"Authorization": f"token {token}"} if token else {}
+    
     api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref={branch}"
-    response = requests.get(api_url)
+    response = requests.get(api_url, headers=headers)
+    
     if response.status_code != 200:
-        raise Exception(f"GitHub API error: {response.status_code}")
+        # Geef meer details bij fouten (zoals de 403)
+        raise Exception(f"GitHub API error: {response.status_code} - {response.text}")
+        
     files = response.json()
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
+    
+    if not csv_file:
+        raise Exception("Geen CSV-bestand gevonden in de repo.")
+        
     return pd.read_csv(csv_file['download_url'])
 
 print("Data ophalen...")
 df_raw = read_latest_csv_from_crudeoil()
+
+# --- Rest van de data verwerking (ongewijzigd t.o.v. vorige versie) ---
 df_raw['time'] = pd.to_datetime(df_raw['time'])
 df_raw = df_raw.sort_values('time')
 
@@ -120,8 +134,6 @@ trade_logs, equity = [], [1.0]
 BEST_TP, BEST_SL = 0.005, -0.004
 RISK, TRAILING_ACT = 0.02, 0.0025
 
-print(f"Start simulatie voor {len(test_keys)} dagen...")
-
 for i, current_key in enumerate(test_keys):
     train_end = i + WINDOW_TRAIN
     val_end = train_end + WINDOW_VAL
@@ -146,11 +158,11 @@ for i, current_key in enumerate(test_keys):
             if hours[j] < 23:
                 if p_l[j] > t_l:
                     ent_p, side, active = asks[j], 1, True
-                    trade_info.update({"entry_time": times[j], "side": "Long", "entry_p": ent_p})
+                    trade_info.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
                     curr_sl = BEST_SL
                 elif p_s[j] > t_s:
                     ent_p, side, active = bids[j], -1, True
-                    trade_info.update({"entry_time": times[j], "side": "Short", "entry_p": ent_p})
+                    trade_info.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
                     curr_sl = BEST_SL
         else:
             r = ((bids[j] - ent_p) / ent_p) if side == 1 else ((ent_p - asks[j]) / ent_p)
@@ -158,33 +170,31 @@ for i, current_key in enumerate(test_keys):
             if r >= BEST_TP or r <= curr_sl or hours[j] >= 23 or j == len(bids)-2:
                 day_ret = r
                 exit_p = bids[j] if side == 1 else asks[j]
-                trade_info.update({"exit_time": times[j], "exit_p": exit_p, "return": r})
+                trade_info.update({"exit_time": str(times[j]), "exit_p": exit_p, "return": r})
                 trade_logs.append(trade_info)
                 active = False
                 break
 
-    # DAGELIIJKSE PLOT OPSLAAN
+    # DAGELIJKSE PLOT OPSLAAN
     plt.figure(figsize=(10, 4))
     plt.plot(df_day['time'], bids, color='black', alpha=0.3, label='Bid Price')
     if trade_info["entry_time"]:
         c = 'green' if trade_info["return"] > 0 else 'red'
-        plt.scatter(trade_info["entry_time"], trade_info["entry_p"], marker='^', color='blue', label='Entry')
-        plt.scatter(trade_info["exit_time"], trade_info["exit_p"], marker='x', color=c, label='Exit')
+        plt.scatter(df_day.loc[df_day['time'] == pd.to_datetime(trade_info["entry_time"]), 'time'], trade_info["entry_p"], marker='^', color='blue', label='Entry', s=100)
+        plt.scatter(df_day.loc[df_day['time'] == pd.to_datetime(trade_info["exit_time"]), 'time'], trade_info["exit_p"], marker='x', color=c, label='Exit', s=100)
     plt.title(f"{current_key} | Ret: {day_ret:.4%}")
     plt.legend()
     plt.savefig(os.path.join(plots_dir, f"plot_{current_key}.png"))
-    plt.close() # Belangrijk voor geheugen
+    plt.close()
 
     equity.append(equity[-1] * (1 + (day_ret * (RISK/abs(BEST_SL)))))
 
 # ==================================================
-# 5. OPSLAAN VAN RESULTATEN & OVERVIEW PLOT
+# 5. RESULTATEN OPSLAAN
 # ==================================================
-# Opslaan CSV logs
 df_logs = pd.DataFrame(trade_logs)
 df_logs.to_csv(os.path.join(output_dir, "trading_logs.csv"), index=False)
 
-# Opslaan Finale Equity Plot
 plt.figure(figsize=(12, 6))
 plt.plot(equity, label='AI Strategy (Bid-Ask)', lw=2, color='navy')
 plt.title("Totaal Rendement Walk-Forward Overview")
@@ -192,4 +202,4 @@ plt.grid(True, alpha=0.3)
 plt.savefig(os.path.join(output_dir, "latest_equity_overview.png"))
 plt.close()
 
-print(f"Klaar! Resultaten opgeslagen in map: {output_dir}")
+print(f"Klaar! Resultaten opgeslagen in {output_dir}")
