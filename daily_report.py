@@ -17,7 +17,6 @@ def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
     repo = "crudeoil"
     branch = "master"
-    
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
     
@@ -25,14 +24,10 @@ def read_latest_csv_from_crudeoil():
     response = requests.get(api_url, headers=headers)
     
     if response.status_code != 200:
-        raise Exception(f"GitHub API error: {response.status_code} - {response.text}")
+        raise Exception(f"GitHub API error: {response.status_code}")
         
     files = response.json()
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
-    
-    if not csv_file:
-        raise Exception("Geen CSV-bestand gevonden.")
-        
     return pd.read_csv(csv_file['download_url'])
 
 print("Data ophalen...")
@@ -40,7 +35,7 @@ df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'])
 df_raw = df_raw.sort_values('time')
 
-# Gaps detecteren en tradingdagen splitsen
+# Gaps & Dagen splitsen
 full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='1T')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
@@ -49,7 +44,6 @@ df['date'] = df['time'].dt.date
 valid_dates = df.groupby('date')['has_data'].any()
 valid_dates = valid_dates[valid_dates].index
 df = df[df['date'].isin(valid_dates)].copy()
-
 cols_to_ffill = df.columns.difference(['time', 'has_data', 'date'])
 df[cols_to_ffill] = df.groupby(df['has_data'].cumsum())[cols_to_ffill].ffill()
 
@@ -61,8 +55,7 @@ long_gaps = gap_groups[gap_groups['length'] >= 10]
 df['trading_day'] = 1
 for _, row in long_gaps.iterrows():
     next_idx = df.index[(df['time'] > row['start_time']) & (df['has_data'])]
-    if len(next_idx) > 0:
-        df.loc[next_idx[0]:, 'trading_day'] += 1
+    if len(next_idx) > 0: df.loc[next_idx[0]:, 'trading_day'] += 1
 
 dag_dict = {f'dag_{i}': d[d['has_data']].reset_index(drop=True) 
             for i, (day, d) in enumerate(df.groupby('trading_day'), start=1)}
@@ -118,7 +111,7 @@ plots_dir = os.path.join(output_dir, "plots")
 os.makedirs(plots_dir, exist_ok=True)
 
 # ==================================================
-# 4. WALK-FORWARD SIMULATIE
+# 4. WALK-FORWARD SIMULATIE (MAX 2 TRADES)
 # ==================================================
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 if len(sorted_keys) > 60: sorted_keys = sorted_keys[-60:]
@@ -130,8 +123,7 @@ test_keys    = sorted_keys[WINDOW_TRAIN + WINDOW_VAL:]
 trade_logs, equity = [], [1.0]
 BEST_TP, BEST_SL = 0.005, -0.004
 RISK, TRAILING_ACT = 0.02, 0.0025
-
-print(f"Simulatie start voor {len(test_keys)} dagen...")
+MAX_TRADES_PER_DAY = 2 
 
 for i, current_key in enumerate(test_keys):
     train_end = i + WINDOW_TRAIN
@@ -139,74 +131,81 @@ for i, current_key in enumerate(test_keys):
     X_tr, yl_tr, ys_tr = get_xy(sorted_keys[i:train_end], dag_dict)
     X_vl, _, _ = get_xy(sorted_keys[train_end:val_end], dag_dict)
     
-    m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, yl_tr)
-    m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, ys_tr)
-    t_l = np.percentile(m_l.predict(X_vl), 97)
-    t_s = np.percentile(m_s.predict(X_vl), 97)
+    m_l = RandomForestRegressor(n_estimators=100, max_depth=6).fit(X_tr, yl_tr)
+    m_s = RandomForestRegressor(n_estimators=100, max_depth=6).fit(X_tr, ys_tr)
+    
+    # Verhoog de zekerheid naar 98% (top 2% signalen)
+    t_l = np.percentile(m_l.predict(X_vl), 98) 
+    t_s = np.percentile(m_s.predict(X_vl), 98)
     
     df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
-    p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
+    p_l = m_l.predict(df_day[f_selected].values)
+    p_s = m_s.predict(df_day[f_selected].values)
     
     bids, asks = df_day['close_bid'].values, df_day['close_ask'].values
     times, hours = df_day['time'].values, df_day['hour'].values
     
-    day_ret, active = 0, False
-    trade_info = {"day": current_key, "entry_time": None, "exit_time": None, "side": None, "entry_p": None, "exit_p": None, "return": 0}
-
+    trades_today = 0
+    total_day_ret = 0
+    day_trade_history = [] # Voor plotting van meerdere trades
+    
+    active = False
     for j in range(len(bids) - 1):
         if not active:
-            if hours[j] < 23:
+            if trades_today < MAX_TRADES_PER_DAY and hours[j] < 23:
+                # LONG entry
                 if p_l[j] > t_l:
-                    # LONG: Open op ASK
                     ent_p, side, active = asks[j], 1, True
-                    trade_info.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
+                    entry_time = times[j]
                     curr_sl = BEST_SL
+                # SHORT entry
                 elif p_s[j] > t_s:
-                    # SHORT: Open op BID
                     ent_p, side, active = bids[j], -1, True
-                    trade_info.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
+                    entry_time = times[j]
                     curr_sl = BEST_SL
         else:
-            # Rendement berekenen op basis van BID (voor Long) of ASK (voor Short)
-            if side == 1:
-                r = (bids[j] - ent_p) / ent_p
-            else:
-                r = (ent_p - asks[j]) / ent_p
-            
+            # P&L berekening
+            r = ((bids[j] - ent_p) / ent_p) if side == 1 else ((ent_p - asks[j]) / ent_p)
             if r >= TRAILING_ACT: curr_sl = max(curr_sl, r - 0.002)
             
+            # Exit triggers
             if r >= BEST_TP or r <= curr_sl or hours[j] >= 23 or j == len(bids)-2:
-                day_ret = r
                 exit_p = bids[j] if side == 1 else asks[j]
-                trade_info.update({"exit_time": str(times[j]), "exit_p": exit_p, "return": r})
+                trade_info = {
+                    "day": current_key, "entry_time": entry_time, "exit_time": times[j],
+                    "side": "Long" if side == 1 else "Short", "entry_p": ent_p, "exit_p": exit_p, "return": r
+                }
                 trade_logs.append(trade_info)
+                day_trade_history.append(trade_info)
+                total_day_ret += r
+                trades_today += 1
                 active = False
-                break
+                # We gaan verder in de loop om te kijken naar een 2e trade
 
-    # Plot dag opslaan
+    # Plot dag opslaan (met alle trades van die dag)
     plt.figure(figsize=(10, 4))
-    plt.plot(df_day['time'], bids, color='black', alpha=0.3, label='Bid Price')
-    if trade_info["entry_time"]:
-        c = 'green' if trade_info["return"] > 0 else 'red'
-        plt.scatter(pd.to_datetime(trade_info["entry_time"]), trade_info["entry_p"], marker='^', color='blue', label='Entry', zorder=5)
-        plt.scatter(pd.to_datetime(trade_info["exit_time"]), trade_info["exit_p"], marker='x', color=c, label='Exit', zorder=5)
-    plt.title(f"{current_key} | Ret: {day_ret:.4%}")
+    plt.plot(df_day['time'], bids, color='black', alpha=0.3)
+    for t in day_trade_history:
+        color = 'green' if t["return"] > 0 else 'red'
+        plt.scatter(t["entry_time"], t["entry_p"], marker='^', color='blue', s=80)
+        plt.scatter(t["exit_time"], t["exit_p"], marker='x', color=color, s=80)
+    
+    plt.title(f"{current_key} | Trades: {trades_today} | Ret: {total_day_ret:.4%}")
     plt.savefig(os.path.join(plots_dir, f"plot_{current_key}.png"))
     plt.close()
 
-    actual_gain = day_ret * (RISK / abs(BEST_SL))
-    equity.append(equity[-1] * (1 + actual_gain))
+    # Bereken dagelijkse equity aanpassing (Risk gebaseerd op totale dag-return)
+    daily_gain = total_day_ret * (RISK / abs(BEST_SL))
+    equity.append(equity[-1] * (1 + daily_gain))
 
 # ==================================================
-# 5. FINALE LOGS & EQUITY
+# 5. OPSLAAN
 # ==================================================
 pd.DataFrame(trade_logs).to_csv(os.path.join(output_dir, "trading_logs.csv"), index=False)
-
 plt.figure(figsize=(12, 6))
-plt.plot(equity, label='Equity (Bid-Ask Adjusted)', color='navy', lw=2)
-plt.title("Cumulative Performance Overview")
-plt.grid(True, alpha=0.3)
+plt.plot(equity, color='navy', lw=2)
+plt.title("Equity Overview (Max 2 Trades/Dag - 98th Percentile)")
 plt.savefig(os.path.join(output_dir, "equity_overview.png"))
 plt.close()
 
-print(f"Klaar! Resultaten staan in {output_dir}")
+print(f"Rapportage voltooid. Map: {output_dir}")
