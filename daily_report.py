@@ -89,49 +89,75 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
-# 3. DE PENDING-REPAIR LOGICA
+# 3. BEVRIES-LOGICA EN DYNAMISCHE SPLIT
 output_dir = "Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
 
-# Zorg dat de map bestaat
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
 if os.path.exists(log_path):
-    print(f"Log gevonden. Bezig met opschonen van pending entries...")
+    print(f"Bestaande log gevonden. Opschonen van pending entries...")
     existing_logs = pd.read_csv(log_path)
-    # FORCEER VERWIJDERING: We houden alleen trades over die NIET pending zijn
+    # Bevries oude dagen: gooi alleen de 'Pending' weg zodat die opnieuw berekend worden
     initial_count = len(existing_logs)
     existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"].copy()
     print(f"Verwijderd: {initial_count - len(existing_logs)} pending regels.")
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
-    print("Geen bestaande log gevonden. Starten met een nieuwe lijst.")
+    print("Geen log gevonden. Nieuwe geschiedenis opbouwen.")
     existing_logs, processed_days = pd.DataFrame(), set()
 
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 new_days = [k for k in sorted_keys if k not in processed_days]
 
 if not new_days:
-    print("Resultaat: Geen nieuwe dagen of pending dagen om te verwerken.")
+    print("Geen nieuwe dagen om te analyseren.")
 else:
     print(f"Nieuwe dagen voor analyse: {new_days}")
     new_records = []
+    
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
-        if idx < 40: continue
         
-        train_keys = sorted_keys[max(0, idx-40):idx-5]
+        # Start pas als we genoeg historie hebben (bijv. vanaf dag 5)
+        if idx < 5: continue 
+        
+        # --- DYNAMISCHE 30:10 SPLIT LOGICA ---
+        # Pak max 40 dagen historie voor de huidige dag
+        history_start = max(0, idx - 40)
+        history_keys = sorted_keys[history_start:idx]
+        total_len = len(history_keys)
+        
+        # Split: 75% train (30 dagen), 25% val (10 dagen)
+        split_point = int(total_len * 0.75)
+        train_keys = history_keys[:split_point]
+        val_keys = history_keys[split_point:]
+        
+        # Trainen op de trainings-subset
         X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
+        if X_tr is None: continue
+            
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, yl_tr)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, ys_tr)
-        t_l, t_s = np.percentile(m_l.predict(X_tr), 97), np.percentile(m_s.predict(X_tr), 97)
         
+        # Validatie: bepaal de drempelwaarde (97e percentiel) op de validatie-subset
+        X_val, _, _ = get_xy(val_keys, dag_dict)
+        if X_val is not None and len(X_val) > 0:
+            t_l = np.percentile(m_l.predict(X_val), 97)
+            t_s = np.percentile(m_s.predict(X_val), 97)
+        else:
+            # Fallback als validatie-set te klein is
+            t_l = np.percentile(m_l.predict(X_tr), 97)
+            t_s = np.percentile(m_s.predict(X_tr), 97)
+        
+        # Trade simulatie voor de huidige dag
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
         bids, asks, times, hours = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values, df_day['hour'].values
         
         active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade"}
+        
         for j in range(len(bids) - 1):
             if not active:
                 if hours[j] < 23:
@@ -146,16 +172,27 @@ else:
             else:
                 r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
                 if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
-                is_data_end, is_time_end = (j == len(bids)-2), (hours[j] >= 23)
+                
+                is_data_end = (j == len(bids)-2)
+                is_time_end = (hours[j] >= 23)
+                
                 if r >= 0.005 or r <= curr_sl or is_time_end or is_data_end:
                     reason = "TP/SL"
                     if is_time_end: reason = "EOD (23h)"
                     if is_data_end and not (r >= 0.005 or r <= curr_sl): reason = "Data End (Pending)"
-                    day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": reason})
-                    active = False; break
+                    
+                    day_res.update({
+                        "exit_time": str(times[j]), 
+                        "exit_p": bids[j] if side == 1 else asks[j], 
+                        "return": r, 
+                        "exit_reason": reason
+                    })
+                    active = False
+                    break
+                    
         new_records.append(day_res)
 
-    # COMBINEREN EN OPSLAAN
+    # Voeg nieuwe resultaten toe aan de bevroren historie
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
     final_df.to_csv(log_path, index=False)
-    print(f"--- SUCCES --- CSV bijgewerkt op {log_path}. Totaal regels nu: {len(final_df)}")
+    print(f"--- VOLTOOID --- Totaal trades in log: {len(final_df)}")
