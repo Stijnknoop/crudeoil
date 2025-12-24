@@ -38,7 +38,6 @@ df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
 
 # Voorkom "Temporal Contamination": ffill niet over grote gaps
-# We vullen alleen kleine gaps (bijv < 5 min), grotere gaps laten we NaN zodat indicatoren resetten
 df = df.set_index('time')
 cols_to_fill = df.columns.difference(['has_data'])
 df[cols_to_fill] = df[cols_to_fill].ffill(limit=5) 
@@ -110,15 +109,17 @@ def get_xy(keys, d_dict):
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
 # ==================================================
-# 3. INCREMENTELE SIMULATIE
+# 3. INCREMENTELE SIMULATIE MET PENDING FIX
 # ==================================================
 output_dir = "Trading_details"
-plots_dir = os.path.join(output_dir, "plots")
-os.makedirs(plots_dir, exist_ok=True)
 log_path = os.path.join(output_dir, "trading_logs.csv")
 
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
+    # Verwijder regels met "Pending" status om ze opnieuw te kunnen berekenen
+    if 'exit_reason' in existing_logs.columns:
+        existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"]
+    
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
     existing_logs, processed_days = pd.DataFrame(), set()
@@ -127,9 +128,9 @@ sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).gro
 new_days = [k for k in sorted_keys if k not in processed_days]
 
 if not new_days:
-    print("Geen nieuwe dagen.")
+    print("Geen nieuwe dagen om te verwerken.")
 else:
-    print(f"Verwerken van {len(new_days)} nieuwe dagen...")
+    print(f"Verwerken van {len(new_days)} dagen...")
     new_records = []
     BEST_TP, BEST_SL = 0.005, -0.004
     
@@ -137,14 +138,13 @@ else:
         idx = sorted_keys.index(current_key)
         if idx < 40: continue
         
-        # Training
         train_keys = sorted_keys[max(0, idx-40):idx-5]
         X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
         
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, yl_tr)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, ys_tr)
         
-        # CAUSALE THRESHOLD: Bepaal drempelwaarde op TRAINING data (niet op val/test!)
+        # Causal thresholds
         t_l = np.percentile(m_l.predict(X_tr), 97)
         t_s = np.percentile(m_s.predict(X_tr), 97)
         
@@ -172,49 +172,13 @@ else:
                 if r >= BEST_TP or r <= curr_sl or is_time_end or is_data_end:
                     reason = "TP/SL"
                     if is_time_end: reason = "EOD (23h)"
-                    if is_data_end and not (r >= BEST_TP or r <= curr_sl): reason = "Data End (Pending)"
+                    if is_data_end and not (r >= BEST_TP or r <= curr_sl): 
+                        reason = "Data End (Pending)"
                     day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": reason})
                     active = False; break
         new_records.append(day_res)
 
-        # Plot
-        plt.figure(figsize=(10, 4))
-        plt.plot(df_day['time'], bids, color='black', alpha=0.3)
-        if "entry_time" in day_res:
-            c = 'green' if day_res["return"] > 0 else 'red'
-            plt.scatter(pd.to_datetime(day_res["entry_time"]), day_res["entry_p"], marker='^', color='blue', s=100)
-            plt.scatter(pd.to_datetime(day_res["exit_time"]), day_res["exit_p"], marker='x', color=c, s=100)
-        plt.title(f"Day: {current_key} | Res: {day_res['return']:.4%}")
-        plt.savefig(os.path.join(plots_dir, f"plot_{current_key}.png"))
-        plt.close()
-
     updated_logs = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
     updated_logs.to_csv(log_path, index=False)
-    existing_logs = updated_logs
 
-# ==================================================
-# 4. PERFORMANCE EVALUATIE
-# ==================================================
-if not existing_logs.empty:
-    # We rekenen nu met werkelijke Risk (2%) schaling
-    RISK_PER_TRADE = 0.02
-    FIXED_SL = 0.004
-    equity = [1.0]
-    for r in existing_logs['return'].values:
-        # Alleen trades met een resultaat (geen "No Trade")
-        if r != 0:
-            # We normaliseren de return naar R-multiples op basis van de initiële SL
-            # Dit is een realistische institutionele maatstaf
-            actual_gain = (r / FIXED_SL) * RISK_PER_TRADE
-            equity.append(equity[-1] * (1 + actual_gain))
-        else:
-            equity.append(equity[-1])
-            
-    plt.figure(figsize=(10, 5))
-    plt.plot(equity, color='darkgreen', lw=2)
-    plt.title("Institutional Grade Equity Curve (Causal Thresholds)")
-    plt.grid(True, alpha=0.2)
-    plt.savefig(os.path.join(output_dir, "equity_overview.png"))
-    plt.close()
-
-print("Klaar! De backtest is nu statistisch en technisch gesloten.")
+print("Klaar! Logs zijn bijgewerkt. Draai nu generate_plots.py.")
