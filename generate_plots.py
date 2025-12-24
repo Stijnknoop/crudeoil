@@ -5,7 +5,7 @@ import os
 import requests
 import datetime
 
-# 1. FUNCTIE VOOR DATA OPHALEN
+# 1. DATA OPHALEN
 def fetch_raw_data():
     user, repo = "Stijnknoop", "crudeoil"
     token = os.getenv("GITHUB_TOKEN")
@@ -21,7 +21,6 @@ def fetch_raw_data():
         print(f"Fout bij ophalen koersdata: {e}")
     return None
 
-# 2. HOOFDFUNCTIE VOOR PLOTTEN
 def generate_performance_plots():
     log_dir = "Trading_details"
     plot_dir = os.path.join(log_dir, "plots")
@@ -31,21 +30,19 @@ def generate_performance_plots():
         os.makedirs(plot_dir)
     
     if not os.path.exists(log_path):
-        print("Geen trading_logs.csv gevonden.")
         return
 
-    # Logs inladen
     df_logs = pd.read_csv(log_path)
+    # Filter trades
     df_trades = df_logs[~df_logs['exit_reason'].isin(['No Trade', 'Data End (Pending)'])].copy()
     
     if df_trades.empty:
-        print("Nog geen trades om te plotten.")
         return
 
+    # Zorg dat de tijdstippen echte datetime objecten zijn
     df_trades['entry_time'] = pd.to_datetime(df_trades['entry_time'])
     df_trades = df_trades.sort_values('entry_time')
 
-    # Haal koersdata op
     raw_data = fetch_raw_data()
     if raw_data is not None:
         raw_data['time'] = pd.to_datetime(raw_data['time'])
@@ -69,66 +66,62 @@ def generate_performance_plots():
         if not df_bh.empty:
             first_price = df_bh['close_bid'].iloc[0]
             df_bh['buy_hold_factor'] = df_bh['close_bid'] / first_price
-            ax1.plot(df_bh['time'], df_bh['buy_hold_factor'], color='royalblue', 
-                     linestyle='--', alpha=0.7, label='Buy & Hold (1x Olie)')
+            ax1.plot(df_bh['time'], df_bh['buy_hold_factor'], color='royalblue', linestyle='--', alpha=0.7, label='Buy & Hold (1x)')
 
     ax1.plot(plot_times, equity_curve, color='darkgreen', linewidth=2.5, label=f'Bot Strategy ({leverage}x)')
     ax1.fill_between(plot_times, 1, equity_curve, color='green', alpha=0.1)
-
-    ax1.set_title(f"Bot Performance vs Buy & Hold\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
-    ax1.set_ylabel("Vermogensfactor (Start = 1.0)")
+    ax1.set_title(f"Performance Overzicht\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
+    ax1.set_ylabel("Factor (Start = 1.0)")
     ax1.set_xlim(left=start_time)
     ax1.grid(True, linestyle='--', alpha=0.3)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
     ax1.legend(loc='upper left')
-    
     fig.autofmt_xdate()
     plt.savefig(os.path.join(log_dir, "equity_curve.png"), bbox_inches='tight', dpi=150)
     plt.close()
 
     # --- 2. INDIVIDUELE DAG-PLOTS ---
     if raw_data is not None:
-        # We maken strings van de datums om fouten te voorkomen
+        # Verkrijg datums van gisteren en vandaag als YYYY-MM-DD
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-        refresh_list = [today_str, yesterday_str]
+        refresh_dates = [today_str, yesterday_str]
 
         for _, trade in df_trades.iterrows():
-            trade_date_str = trade['entry_time'].strftime('%Y-%m-%d')
+            # Haal puur de datum uit de entry_time (bijv. 2025-12-24)
+            trade_date_dt = trade['entry_time'].date()
+            trade_date_str = trade_date_dt.strftime('%Y-%m-%d')
+            
             file_name = f"{trade_date_str}.png"
             file_path = os.path.join(plot_dir, file_name)
             
-            # STRENGE VERWIJDER LOGICA
-            if trade_date_str in refresh_list:
-                if os.path.exists(file_path):
-                    try:
-                        os.replace(file_path, file_path + ".old") # Hernoemen werkt vaak beter dan direct deleten
-                        os.remove(file_path + ".old")
-                        print(f"Succesvolle refresh uitgevoerd voor: {file_name}")
-                    except Exception as e:
-                        print(f"Kon {file_name} niet verwijderen, probeer overschrijven: {e}")
-
-            # Als het bestand nog steeds bestaat en het is GEEN refresh dag, sla over
-            if os.path.exists(file_path) and trade_date_str not in refresh_list:
+            # DE CRUCIALE STAP: 
+            # Als het NIET vandaag of gisteren is EN het bestand bestaat al -> Overslaan
+            # Als het WEL vandaag of gisteren is -> Altijd doorgaan (overschrijven)
+            if os.path.exists(file_path) and (trade_date_str not in refresh_dates):
                 continue
-                
-            day_data = raw_data[raw_data['time'].dt.strftime('%Y-%m-%d') == trade_date_str].copy()
+            
+            # Filter koersdata voor specifiek deze dag
+            day_data = raw_data[raw_data['time'].dt.date == trade_date_dt].copy()
             
             if not day_data.empty:
                 plt.figure(figsize=(10, 5))
-                plt.plot(day_data['time'], day_data['close_bid'], color='blue', alpha=0.4, label='Olieprijs')
+                plt.plot(day_data['time'], day_data['close_bid'], color='blue', alpha=0.4, label='Prijs')
                 
                 plt.scatter(trade['entry_time'], trade['entry_p'], color='green', marker='^', s=100, label="Entry", zorder=5)
                 if not pd.isna(trade['exit_time']):
                     exit_t = pd.to_datetime(trade['exit_time'])
                     plt.scatter(exit_t, trade['exit_p'], color='red', marker='v', s=100, label="Exit", zorder=5)
                 
-                plt.title(f"Trade Detail: {trade_date_str} | Resultaat: {trade['return']:.2%}")
+                plt.title(f"Trade: {trade_date_str} | Return: {trade['return']:.2%}")
                 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
                 plt.grid(True, alpha=0.2)
                 plt.legend()
+                
+                # Sla op (dit overschrijft automatisch het oude bestand)
                 plt.savefig(file_path, bbox_inches='tight')
                 plt.close()
+                print(f"Plot ververst voor: {file_name}")
 
 if __name__ == "__main__":
     generate_performance_plots()
