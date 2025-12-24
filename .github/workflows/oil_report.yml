@@ -27,18 +27,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pandas numpy matplotlib scikit-learn
 
-      - name: Draai rapportage script
+      - name: Draai rapportage script (AI Analyse)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python daily_report.py
+
+      - name: Genereer Trade Plots (Visualisatie)
+        run: python generate_plots.py
 
       - name: Push Resultaten naar Repo
         run: |
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
           
-          # Map toevoegen (zorg dat deze bestaat na run)
+          # Trek de laatste wijzigingen binnen om merge conflicts te voorkomen
+          git pull origin master
+          
           git add Trading_details/
           
-          git commit -m "Update rapportage en balans: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
+          git commit -m "Update logs en plots: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
           git push
+
+    
