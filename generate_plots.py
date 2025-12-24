@@ -89,21 +89,25 @@ def generate_performance_plots():
 
     # --- 2. INDIVIDUELE DAG-PLOTS ---
     if raw_data is not None:
-        today = datetime.date.today()
-        yesterday = today - datetime.timedelta(days=1)
+        # Bepaal gisteren en vandaag
+        today_dt = datetime.date.today()
+        yesterday_dt = today_dt - datetime.timedelta(days=1)
+        
+        # Maak een lijst met datums die we MOETEN verversen
+        refresh_dates = [today_dt, yesterday_dt]
 
         for _, trade in df_trades.iterrows():
             trade_date = trade['entry_time'].date()
             file_name = f"{trade_date}.png"
             file_path = os.path.join(plot_dir, file_name)
             
-            # --- VERWIJDER LOGICA: Altijd gisteren en vandaag opnieuw doen ---
-            if trade_date >= yesterday:
+            # FORCEER REFRESH: Als de datum in onze lijst staat, gooi de oude plot weg
+            if trade_date in refresh_dates:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-                    print(f"Oude plot verwijderd voor refresh: {file_name}")
+                    print(f"Forceer refresh voor: {file_name}")
             
-            # Sla over als de plot al bestaat (voor data ouder dan gisteren)
+            # Als het bestand nog bestaat (oudere data), sla dan over
             if os.path.exists(file_path):
                 continue
                 
@@ -124,7 +128,7 @@ def generate_performance_plots():
                 plt.legend()
                 plt.savefig(file_path, bbox_inches='tight')
                 plt.close()
-                print(f"Dagplot gegenereerd: {file_name}")
+                print(f"Dagplot (opnieuw) aangemaakt: {file_name}")
 
 if __name__ == "__main__":
     generate_performance_plots()
