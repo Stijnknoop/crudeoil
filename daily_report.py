@@ -120,18 +120,17 @@ else:
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
         if idx < 40: continue
-
-
+        
         train_keys = sorted_keys[max(0, idx-40):idx-5]
         X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, yl_tr)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, ys_tr)
         t_l, t_s = np.percentile(m_l.predict(X_tr), 97), np.percentile(m_s.predict(X_tr), 97)
-
+        
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
         bids, asks, times, hours = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values, df_day['hour'].values
-
+        
         active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade"}
         for j in range(len(bids) - 1):
             if not active:
