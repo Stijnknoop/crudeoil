@@ -89,42 +89,49 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
-# 3. HERSTEL GESCHIEDENIS LOGICA
+# 3. DE PENDING-REPAIR LOGICA
 output_dir = "Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
 
-if not os.path.exists(output_dir): os.makedirs(output_dir)
+# Zorg dat de map bestaat
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
 
 if os.path.exists(log_path):
+    print(f"Log gevonden. Bezig met opschonen van pending entries...")
     existing_logs = pd.read_csv(log_path)
+    # FORCEER VERWIJDERING: We houden alleen trades over die NIET pending zijn
+    initial_count = len(existing_logs)
     existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"].copy()
+    print(f"Verwijderd: {initial_count - len(existing_logs)} pending regels.")
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
+    print("Geen bestaande log gevonden. Starten met een nieuwe lijst.")
     existing_logs, processed_days = pd.DataFrame(), set()
 
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 new_days = [k for k in sorted_keys if k not in processed_days]
 
 if not new_days:
-    print("Alles up-to-date.")
+    print("Resultaat: Geen nieuwe dagen of pending dagen om te verwerken.")
 else:
-    print(f"Verwerken van {len(new_days)} dagen...")
+    print(f"Nieuwe dagen voor analyse: {new_days}")
     new_records = []
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
-        # Verlaagde buffer naar 10 dagen om meer historie te zien
-        if idx < 10: continue 
-        
-        train_keys = sorted_keys[max(0, idx-20):idx] # Getraind op recente 20 dagen
+        if idx < 40: continue
+
+
+        train_keys = sorted_keys[max(0, idx-40):idx-5]
         X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, yl_tr)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, ys_tr)
         t_l, t_s = np.percentile(m_l.predict(X_tr), 97), np.percentile(m_s.predict(X_tr), 97)
-        
+
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
         bids, asks, times, hours = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values, df_day['hour'].values
-        
+
         active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade"}
         for j in range(len(bids) - 1):
             if not active:
@@ -149,6 +156,7 @@ else:
                     active = False; break
         new_records.append(day_res)
 
+    # COMBINEREN EN OPSLAAN
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
     final_df.to_csv(log_path, index=False)
-    print(f"Log bijgewerkt. Totaal: {len(final_df)} trades.")
+    print(f"--- SUCCES --- CSV bijgewerkt op {log_path}. Totaal regels nu: {len(final_df)}")
