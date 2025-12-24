@@ -85,50 +85,50 @@ def generate_performance_plots():
     fig.autofmt_xdate()
     plt.savefig(os.path.join(log_dir, "equity_curve.png"), bbox_inches='tight', dpi=150)
     plt.close()
-    print("Equity curve gegenereerd.")
 
     # --- 2. INDIVIDUELE DAG-PLOTS ---
     if raw_data is not None:
-        # Bepaal gisteren en vandaag
-        today_dt = datetime.date.today()
-        yesterday_dt = today_dt - datetime.timedelta(days=1)
-        
-        # Maak een lijst met datums die we MOETEN verversen
-        refresh_dates = [today_dt, yesterday_dt]
+        # We maken strings van de datums om fouten te voorkomen
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        refresh_list = [today_str, yesterday_str]
 
         for _, trade in df_trades.iterrows():
-            trade_date = trade['entry_time'].date()
-            file_name = f"{trade_date}.png"
+            trade_date_str = trade['entry_time'].strftime('%Y-%m-%d')
+            file_name = f"{trade_date_str}.png"
             file_path = os.path.join(plot_dir, file_name)
             
-            # FORCEER REFRESH: Als de datum in onze lijst staat, gooi de oude plot weg
-            if trade_date in refresh_dates:
+            # STRENGE VERWIJDER LOGICA
+            if trade_date_str in refresh_list:
                 if os.path.exists(file_path):
-                    os.remove(file_path)
-                    print(f"Forceer refresh voor: {file_name}")
-            
-            # Als het bestand nog bestaat (oudere data), sla dan over
-            if os.path.exists(file_path):
+                    try:
+                        os.replace(file_path, file_path + ".old") # Hernoemen werkt vaak beter dan direct deleten
+                        os.remove(file_path + ".old")
+                        print(f"Succesvolle refresh uitgevoerd voor: {file_name}")
+                    except Exception as e:
+                        print(f"Kon {file_name} niet verwijderen, probeer overschrijven: {e}")
+
+            # Als het bestand nog steeds bestaat en het is GEEN refresh dag, sla over
+            if os.path.exists(file_path) and trade_date_str not in refresh_list:
                 continue
                 
-            day_data = raw_data[raw_data['time'].dt.date == trade_date].copy()
+            day_data = raw_data[raw_data['time'].dt.strftime('%Y-%m-%d') == trade_date_str].copy()
             
             if not day_data.empty:
                 plt.figure(figsize=(10, 5))
                 plt.plot(day_data['time'], day_data['close_bid'], color='blue', alpha=0.4, label='Olieprijs')
                 
-                plt.scatter(trade['entry_time'], trade['entry_p'], color='green', marker='^', s=100, label=f"Entry", zorder=5)
+                plt.scatter(trade['entry_time'], trade['entry_p'], color='green', marker='^', s=100, label="Entry", zorder=5)
                 if not pd.isna(trade['exit_time']):
                     exit_t = pd.to_datetime(trade['exit_time'])
-                    plt.scatter(exit_t, trade['exit_p'], color='red', marker='v', s=100, label=f"Exit", zorder=5)
+                    plt.scatter(exit_t, trade['exit_p'], color='red', marker='v', s=100, label="Exit", zorder=5)
                 
-                plt.title(f"Trade Detail: {trade_date} | Resultaat: {trade['return']:.2%}")
+                plt.title(f"Trade Detail: {trade_date_str} | Resultaat: {trade['return']:.2%}")
                 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
                 plt.grid(True, alpha=0.2)
                 plt.legend()
                 plt.savefig(file_path, bbox_inches='tight')
                 plt.close()
-                print(f"Dagplot (opnieuw) aangemaakt: {file_name}")
 
 if __name__ == "__main__":
     generate_performance_plots()
