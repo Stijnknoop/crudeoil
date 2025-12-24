@@ -142,11 +142,11 @@ else:
         # Validatie voor drempelwaarde
         X_val, _, _ = get_xy(val_keys, dag_dict)
         if X_val is not None and len(X_val) > 0:
-            t_l = np.percentile(m_l.predict(X_val), 98)
-            t_s = np.percentile(m_s.predict(X_val), 98)
+            t_l = np.percentile(m_l.predict(X_val), 97)
+            t_s = np.percentile(m_s.predict(X_val), 97)
         else:
-            t_l = np.percentile(m_l.predict(X_tr), 98)
-            t_s = np.percentile(m_s.predict(X_tr), 98)
+            t_l = np.percentile(m_l.predict(X_tr), 97)
+            t_s = np.percentile(m_s.predict(X_tr), 97)
         
         # Dag simulatie
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
