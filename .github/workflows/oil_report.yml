@@ -33,6 +33,8 @@ jobs:
         run: python daily_report.py
 
       - name: Genereer Trade Plots (Visualisatie)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python generate_plots.py
 
       - name: Push Resultaten naar Repo
@@ -43,9 +45,8 @@ jobs:
           # Trek de laatste wijzigingen binnen om merge conflicts te voorkomen
           git pull origin master
           
+          # Voeg de hele map toe waar logs en alle plots (dag + equity) staan
           git add Trading_details/
           
-          git commit -m "Update logs en plots: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
+          git commit -m "Update logs, trade plots en equity curve: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
           git push
-
-    
