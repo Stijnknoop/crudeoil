@@ -89,7 +89,7 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
-# 3. LOGICA VOOR BEVRIEZEN EN MINIMAAL 30 DAGEN HISTORIE
+# 3. LOGICA VOOR BEVRIEZEN EN ANALYSE
 output_dir = "Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
 
@@ -99,6 +99,7 @@ if not os.path.exists(output_dir):
 if os.path.exists(log_path):
     print(f"Log gevonden. Opschonen van pending entries...")
     existing_logs = pd.read_csv(log_path)
+    # Verwijder pending trades om ze vandaag opnieuw te berekenen met volledige data
     existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"].copy()
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
@@ -117,36 +118,38 @@ else:
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
         
-        # 1. Bepaal historie (max 40 dagen)
+        # Bepaal historie (max 40 dagen)
         history_start = max(0, idx - 40)
         history_keys = sorted_keys[history_start:idx]
         total_len = len(history_keys)
         
-        # --- BEVEILIGING: MINIMAAL 30 DAGEN HISTORIE (TRAIN + VAL) ---
-        if total_len < 32:
-            print(f"Overslaan: {current_key} (Historie {total_len} is minder dan de vereiste 32 dagen)")
+        # --- BEVEILIGING: START PAS NA 20 DAGEN HISTORIE ---
+        if total_len < 20:
+            print(f"Overslaan: {current_key} (Historie {total_len} < 20 dagen)")
             continue
             
-        # 2. Split: 75% train / 25% val
+        # Split: 75% train / 25% val
         split_point = int(total_len * 0.75)
         train_keys = history_keys[:split_point]
         val_keys = history_keys[split_point:]
         
-        # Model trainen
+        # Model trainen met random_state voor stabiliteit
         X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
         if X_tr is None: continue
             
-        m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, yl_tr)
-        m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1).fit(X_tr, ys_tr)
+        m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
+        m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
         
-        # Validatie voor drempelwaarde
+        # Validatie voor drempelwaarde (95e percentiel = actiever)
         X_val, _, _ = get_xy(val_keys, dag_dict)
+        threshold_pct = 95
+        
         if X_val is not None and len(X_val) > 0:
-            t_l = np.percentile(m_l.predict(X_val), 97)
-            t_s = np.percentile(m_s.predict(X_val), 97)
+            t_l = np.percentile(m_l.predict(X_val), threshold_pct)
+            t_s = np.percentile(m_s.predict(X_val), threshold_pct)
         else:
-            t_l = np.percentile(m_l.predict(X_tr), 97)
-            t_s = np.percentile(m_s.predict(X_tr), 97)
+            t_l = np.percentile(m_l.predict(X_tr), threshold_pct)
+            t_s = np.percentile(m_s.predict(X_tr), threshold_pct)
         
         # Dag simulatie
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
@@ -168,6 +171,7 @@ else:
                         curr_sl = -0.004
             else:
                 r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
+                # Trailing stop logic
                 if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
                 
                 is_data_end = (j == len(bids)-2)
