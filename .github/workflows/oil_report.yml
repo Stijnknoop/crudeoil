@@ -1,43 +1,16 @@
-name: Oil Trading Daily Report
-
-on:
-  schedule:
-    # Draait elke dag om 08:00 UTC
-    - cron: '0 8 * * *'
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      # 1. Cache instellen voor pip
-      - name: Cache Python dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          # De cache key is gebaseerd op het OS en de lijst met libraries
-          key: ${{ runner.os }}-pip-v1
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      # 2. Installatie (sneller door cache en binary vlag)
-      - name: Installeer afhankelijkheden
+- name: Installeer afhankelijkheden
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary requests pandas numpy matplotlib scikit-learn
 
+      # STAP 1: Git config en pull VOORDAT we scripts draaien
+      - name: Voorbereiden Git
+        run: |
+          git config --global user.name 'Oil Trading Bot'
+          git config --global user.email 'bot@trading.com'
+          git pull origin master --rebase
+
+      # STAP 2: Draai de scripts (deze genereren nieuwe bestanden)
       - name: Draai rapportage script (AI Analyse)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -48,16 +21,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python generate_plots.py
 
+      # STAP 3: Push de resultaten
       - name: Push Resultaten naar Repo
         run: |
-          git config --global user.name 'Oil Trading Bot'
-          git config --global user.email 'bot@trading.com'
-          
-          # Trek de laatste wijzigingen binnen om merge conflicts te voorkomen
-          git pull origin master --rebase
-          
-          # Voeg de hele map toe waar logs en alle plots (dag + equity) staan
           git add Trading_details/
-          
-          git commit -m "Update logs, trade plots en equity curve: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
+          git commit -m "Update logs en plots: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
           git push
