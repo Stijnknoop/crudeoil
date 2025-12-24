@@ -122,9 +122,9 @@ else:
         history_keys = sorted_keys[history_start:idx]
         total_len = len(history_keys)
         
-        # --- BEVEILIGING: MINIMAAL 30 DAGEN HISTORIE (TRAIN + VAL) ---
-        if total_len < 30:
-            print(f"Overslaan: {current_key} (Historie {total_len} is minder dan de vereiste 30 dagen)")
+        # --- BEVEILIGING: MINIMAAL 20 DAGEN HISTORIE (TRAIN + VAL) ---
+        if total_len < 20:
+            print(f"Overslaan: {current_key} (Historie {total_len} is minder dan de vereiste 20 dagen)")
             continue
             
         # 2. Split: 75% train / 25% val
