@@ -2,14 +2,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import requests
-import re
+from datetime import datetime
 
 # Zorg voor de juiste backend voor GitHub Actions
 import matplotlib
 matplotlib.use('Agg')
 
 def download_latest_csv():
-    # Gebruik dezelfde logica als daily_report om de juiste file te vinden
     user = "Stijnknoop"
     repo = "crudeoil"
     branch = "master"
@@ -23,7 +22,6 @@ def download_latest_csv():
         raise Exception(f"GitHub API error: {response.status_code}")
         
     files = response.json()
-    # Zoek naar het eerste CSV bestand
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
     
     if not csv_file:
@@ -37,7 +35,7 @@ def generate_visuals():
     log_path = "Trading_details/trading_logs.csv"
     
     if not os.path.exists(log_path):
-        print("Geen trading_logs.csv gevonden. Er valt niets te plotten.")
+        print("Geen trading_logs.csv gevonden.")
         return
 
     # Data en logs laden
@@ -49,50 +47,59 @@ def generate_visuals():
 
     df_raw['time'] = pd.to_datetime(df_raw['time'])
     logs = pd.read_csv(log_path)
-
     os.makedirs(output_dir, exist_ok=True)
 
+    # --- DEEL 1: DAGELIJKSE TRADE PLOTS ---
     for _, trade in logs.iterrows():
-        # Sla regels zonder trade over
         if pd.isna(trade['entry_time']) or trade['exit_reason'] == "No Trade":
             continue
 
-        # Datum bepalen voor de bestandsnaam
         entry_dt = pd.to_datetime(trade['entry_time'])
         file_date = entry_dt.strftime('%Y-%m-%d')
         plot_filename = f"{output_dir}/plot_{file_date}.png"
 
-        # Check of plot al bestaat
-        if os.path.exists(plot_filename):
-            continue
+        if not os.path.exists(plot_filename):
+            print(f"Grafiek maken voor: {file_date}")
+            day_data = df_raw[df_raw['time'].dt.date == entry_dt.date()].sort_values('time')
+            if not day_data.empty:
+                plt.figure(figsize=(12, 6))
+                plt.plot(day_data['time'], day_data['close_bid'], color='black', alpha=0.3)
+                plt.scatter(pd.to_datetime(trade['entry_time']), trade['entry_p'], marker='^', color='blue', s=100, label='Entry')
+                if not pd.isna(trade['exit_time']):
+                    exit_color = 'green' if trade['return'] > 0 else 'red'
+                    plt.scatter(pd.to_datetime(trade['exit_time']), trade['exit_p'], marker='x', color=exit_color, s=120, label=f'Exit')
+                plt.title(f"Trade: {file_date} | Return: {trade['return']:.4%}")
+                plt.grid(True, alpha=0.2)
+                plt.savefig(plot_filename)
+                plt.close()
 
-        print(f"Grafiek maken voor datum: {file_date}")
+    # --- DEEL 2: EQUITY OVERVIEW (ZOALS JE AFBEELDING) ---
+    print("Equity overview genereren...")
+    RISK_PER_TRADE = 0.02
+    FIXED_SL = 0.004
+    equity = [1.0]
+    
+    # Bereken cumulatieve equity
+    for r in logs['return'].values:
+        if r != 0 and not pd.isna(r):
+            actual_gain = (r / FIXED_SL) * RISK_PER_TRADE
+            equity.append(equity[-1] * (1 + actual_gain))
+        else:
+            equity.append(equity[-1])
 
-        # Filter data voor die dag (marge van 1 uur voor/na de trade)
-        day_data = df_raw[df_raw['time'].dt.date == entry_dt.date()].sort_values('time')
-
-        if day_data.empty:
-            continue
-
-        plt.figure(figsize=(12, 6))
-        plt.plot(day_data['time'], day_data['close_bid'], color='black', alpha=0.3, label='Price')
-        
-        # Entry
-        plt.scatter(pd.to_datetime(trade['entry_time']), trade['entry_p'], 
-                    marker='^', color='blue', s=100, label='Entry', zorder=5)
-        
-        # Exit
-        if not pd.isna(trade['exit_time']):
-            exit_color = 'green' if trade['return'] > 0 else 'red'
-            plt.scatter(pd.to_datetime(trade['exit_time']), trade['exit_p'], 
-                        marker='x', color=exit_color, s=120, label=f'Exit ({trade["exit_reason"]})', zorder=5)
-
-        plt.title(f"Trade Report: {file_date} | Return: {trade['return']:.4%}")
-        plt.grid(True, alpha=0.2)
-        plt.legend()
-        
-        plt.savefig(plot_filename)
-        plt.close()
+    plt.figure(figsize=(12, 6))
+    plt.plot(equity, color='darkgreen', lw=2.5)
+    plt.axhline(y=1.0, color='black', linestyle='--', alpha=0.3)
+    
+    # Styling conform je screenshot
+    plt.title(f"Institutional Grade Equity Curve (Causal Thresholds)\nUpdated: {datetime.now().strftime('%Y-%m-%d')}", fontsize=14)
+    plt.grid(True, which='both', linestyle='-', alpha=0.15)
+    plt.ylabel("Relative Value")
+    plt.xlabel("Trade Number")
+    
+    # Sla op als algemeen overzicht
+    plt.savefig(f"Trading_details/equity_history.png", dpi=150)
+    plt.close()
 
 if __name__ == "__main__":
     generate_visuals()
