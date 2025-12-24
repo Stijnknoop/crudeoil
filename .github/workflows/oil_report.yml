@@ -1,16 +1,45 @@
-- name: Installeer afhankelijkheden
+name: Oil Trading Daily Report
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-v1
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Installeer afhankelijkheden
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary requests pandas numpy matplotlib scikit-learn
 
-      # STAP 1: Git config en pull VOORDAT we scripts draaien
       - name: Voorbereiden Git
         run: |
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
           git pull origin master --rebase
 
-      # STAP 2: Draai de scripts (deze genereren nieuwe bestanden)
       - name: Draai rapportage script (AI Analyse)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -21,7 +50,6 @@
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python generate_plots.py
 
-      # STAP 3: Push de resultaten
       - name: Push Resultaten naar Repo
         run: |
           git add Trading_details/
