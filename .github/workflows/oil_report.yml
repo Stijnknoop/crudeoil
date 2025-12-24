@@ -2,12 +2,10 @@ name: Oil Trading Daily Report
 
 on:
   schedule:
-    # Draait elke dag om 00:00 UTC
+    # Draait elke dag om 08:00 UTC
     - cron: '0 8 * * *'
   workflow_dispatch:
-    # Hiermee kun je de actie handmatig starten via het 'Actions' tabblad
 
-# Dwing schrijfrechten af voor de bot (tegen Error 403)
 permissions:
   contents: write
 
@@ -30,19 +28,17 @@ jobs:
           pip install requests pandas numpy matplotlib scikit-learn
 
       - name: Draai rapportage script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python daily_report.py
 
       - name: Push Resultaten naar Repo
         run: |
-          # Configureer de Git gebruiker
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
           
-          # Forceer het toevoegen van de map Trading_details
+          # Map toevoegen (zorg dat deze bestaat na run)
           git add Trading_details/
           
-          # Alleen committen als er wijzigingen zijn
           git commit -m "Update rapportage en balans: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen om te committen"
-          
-          # Push de wijzigingen terug naar de repository
           git push
