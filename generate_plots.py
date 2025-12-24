@@ -48,12 +48,19 @@ def generate_visuals():
 
     os.makedirs(output_dir, exist_ok=True)
     
-    # --- NIEUW: DEFINIEER VANDAAG EN GISTEREN ---
+    # --- STAP 1: DEFINIEER EN VERWIJDER OUDE PLOTS ---
     today_str = datetime.now().strftime('%Y-%m-%d')
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
     force_update_dates = [today_str, yesterday_str]
 
-    # --- 1. DAGELIJKS PLOTS ---
+    print(f"Schoonmaak: Verwijderen van plots voor {force_update_dates} indien aanwezig...")
+    for date_str in force_update_dates:
+        target_file = os.path.join(output_dir, f"plot_{date_str}.png")
+        if os.path.exists(target_file):
+            os.remove(target_file)
+            print(f"Verwijderd: {target_file}")
+
+    # --- STAP 2: DAGELIJKSE PLOTS GENEREREN ---
     for _, trade in logs.iterrows():
         if pd.isna(trade.get('entry_time')) or trade.get('exit_reason') == "No Trade":
             continue
@@ -63,30 +70,29 @@ def generate_visuals():
         plot_filename = os.path.join(output_dir, f"plot_{file_date}.png")
         
         is_pending = trade.get('exit_reason') == "Data End (Pending)"
-        is_force_day = (file_date in force_update_dates)
         
-        # FORCEER UPDATE: Als bestand ontbreekt OF pending status OF (vandaag/gisteren)
-        if not os.path.exists(plot_filename) or is_pending or is_force_day:
-            print(f"Genereren/Updaten plot voor {file_date} (Force: {is_force_day}, Pending: {is_pending})")
+        # Alleen tekenen als het bestand niet bestaat (wat voor vandaag/gisteren nu zo is)
+        if not os.path.exists(plot_filename):
+            print(f"Nieuwe plot maken voor {file_date}...")
             day_data = df_raw[df_raw['time'].dt.date == entry_dt.date()].sort_values('time')
             
             if not day_data.empty:
                 plt.figure(figsize=(12, 6))
                 plt.plot(day_data['time'], day_data['close_bid'], color='black', alpha=0.3, label='Koers')
                 
-                # Entry
+                # Entry punt
                 plt.scatter(pd.to_datetime(trade['entry_time']), trade['entry_p'], 
                             marker='^', color='blue', s=100, label='Entry', zorder=5)
                 
                 if is_pending:
-                    # LIVE INDICATOR
+                    # LIVE INDICATOR (Blauwe stip op laatste bekende prijs)
                     current_p = day_data['close_bid'].iloc[-1]
                     current_t = day_data['time'].iloc[-1]
                     plt.scatter(current_t, current_p, color='dodgerblue', s=200, 
                                 edgecolors='white', linewidths=2, label=f'LIVE ({trade["return"]:.2%})', zorder=6)
                     plt.title(f"Trade Detail: {file_date} | STATUS: LIVE")
                 else:
-                    # GESLOTEN
+                    # GESLOTEN TRADE (Kruisje op exit prijs)
                     exit_color = 'green' if trade['return'] > 0 else 'red'
                     plt.scatter(pd.to_datetime(trade['exit_time']), trade['exit_p'], 
                                 marker='x', color=exit_color, s=120, label=f'Exit ({trade["return"]:.2%})', zorder=5)
@@ -94,20 +100,15 @@ def generate_visuals():
                 
                 plt.legend(loc='upper left')
                 plt.grid(True, alpha=0.15)
-                
-                # Veilig overschrijven
-                if os.path.exists(plot_filename):
-                    os.remove(plot_filename)
-                
                 plt.savefig(plot_filename)
                 plt.close()
 
-    # --- 2. EQUITY CURVE (ALTIJD UPDATEN) ---
+    # --- STAP 3: EQUITY CURVE ---
     equity = [1.0]
     valid_trades = logs[logs['exit_reason'] != "No Trade"]
     for r in valid_trades['return'].values:
         if not pd.isna(r):
-            # Formule: (Return / SL) * Risk = (r / 0.4%) * 2%
+            # Formule: (Return / 0.4% SL) * 2% Risk
             equity.append(equity[-1] * (1 + (r / 0.004) * 0.02))
 
     plt.figure(figsize=(10, 5))
@@ -119,7 +120,7 @@ def generate_visuals():
     plt.title(f"Live Portfolio Performance\nUpdate: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     plt.savefig(equity_path, dpi=150)
     plt.close()
-    print("Alle visualisaties zijn bijgewerkt.")
+    print("Visualisaties voltooid en opgeschoond.")
 
 if __name__ == "__main__":
     generate_visuals()
