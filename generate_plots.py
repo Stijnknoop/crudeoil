@@ -3,8 +3,9 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import os
 import requests
+import numpy as np
 
-# Functie om de ruwe koersdata op te halen
+# 1. FUNCTIE VOOR DATA OPHALEN
 def fetch_raw_data():
     user, repo = "Stijnknoop", "crudeoil"
     token = os.getenv("GITHUB_TOKEN")
@@ -20,6 +21,7 @@ def fetch_raw_data():
         print(f"Fout bij ophalen koersdata: {e}")
     return None
 
+# 2. HOOFDFUNCTIE VOOR PLOTTEN
 def generate_performance_plots():
     log_dir = "Trading_details"
     plot_dir = os.path.join(log_dir, "plots")
@@ -32,7 +34,7 @@ def generate_performance_plots():
         print("Geen trading_logs.csv gevonden.")
         return
 
-    # Logs inladen
+    # Logs inladen en filteren
     df_logs = pd.read_csv(log_path)
     df_trades = df_logs[~df_logs['exit_reason'].isin(['No Trade', 'Data End (Pending)'])].copy()
     
@@ -43,60 +45,65 @@ def generate_performance_plots():
     df_trades['entry_time'] = pd.to_datetime(df_trades['entry_time'])
     df_trades = df_trades.sort_values('entry_time')
 
-    # Haal koersdata één keer op voor alle plots
+    # Haal koersdata op voor Buy & Hold en achtergrond
     raw_data = fetch_raw_data()
     if raw_data is not None:
         raw_data['time'] = pd.to_datetime(raw_data['time'])
+        raw_data = raw_data.sort_values('time')
 
-    # --- 1. EQUITY CURVE PLOT (Portfolio vs Olieprijs) ---
+    # --- BEREKENING EQUITY CURVE (BOT) ---
     leverage = 5
     returns = df_trades['return'].values * leverage
     equity_curve = [1.0]
     for r in returns:
         equity_curve.append(equity_curve[-1] * (1 + r))
     
+    # Maak tijdlijn: start 1 uur voor de eerste trade voor een mooi beginpunt
     start_time = df_trades['entry_time'].min() - pd.Timedelta(hours=1)
     plot_times = [start_time] + df_trades['entry_time'].tolist()
 
-    fig, ax1 = plt.subplots(figsize=(12, 6))
-
+    # --- BEREKENING BUY & HOLD ---
     if raw_data is not None:
         mask = raw_data['time'] >= start_time
-        ax2 = ax1.twinx()
-        ax2.plot(raw_data.loc[mask, 'time'], raw_data.loc[mask, 'close_bid'], 
-                 color='gray', alpha=0.2, label='Olieprijs (Achtergrond)')
-        ax2.set_ylabel('Olieprijs ($)', color='gray')
-        ax2.tick_params(axis='y', labelcolor='gray')
+        df_bh = raw_data.loc[mask].copy()
+        if not df_bh.empty:
+            first_price = df_bh['close_bid'].iloc[0]
+            df_bh['buy_hold_factor'] = df_bh['close_bid'] / first_price
 
-    ax1.plot(plot_times, equity_curve, color='darkgreen', linewidth=2, label=f'Portfolio Groei ({leverage}x)')
+    # --- PLOT 1: EQUITY CURVE VS BUY & HOLD ---
+    fig, ax1 = plt.subplots(figsize=(12, 7))
+
+    # Buy & Hold lijn (Blauwe stippellijn)
+    if raw_data is not None and not df_bh.empty:
+        ax1.plot(df_bh['time'], df_bh['buy_hold_factor'], color='royalblue', 
+                 linestyle='--', alpha=0.7, label='Buy & Hold (1x Olie)')
+
+    # Bot Strategy lijn (Dikke groene lijn)
+    ax1.plot(plot_times, equity_curve, color='darkgreen', linewidth=2.5, 
+             label=f'Bot Strategy ({leverage}x Leverage)')
     ax1.fill_between(plot_times, 1, equity_curve, color='green', alpha=0.1)
-    
-    ax1.set_title(f"Oil Trading Bot: Performance Overzicht\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
+
+    # Opmaak Equity Grafiek
+    ax1.set_title(f"Bot Performance vs Buy & Hold\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
     ax1.set_ylabel("Vermogensfactor (Start = 1.0)")
+    ax1.axhline(y=1.0, color='black', linestyle='-', alpha=0.3)
     ax1.set_xlim(left=start_time)
     ax1.grid(True, linestyle='--', alpha=0.3)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
+    ax1.legend(loc='upper left', frameon=True)
+    
     fig.autofmt_xdate()
-
-    lines, labels = ax1.get_legend_handles_labels()
-    if raw_data is not None:
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines + lines2, labels + labels2, loc='upper left')
-    else:
-        ax1.legend(loc='upper left')
-
-    plt.savefig(os.path.join(log_dir, "equity_curve.png"), bbox_inches='tight')
+    plt.savefig(os.path.join(log_dir, "equity_curve.png"), bbox_inches='tight', dpi=150)
     plt.close()
-    print("Equity curve gegenereerd.")
+    print("Equity curve (Bot vs Buy & Hold) gegenereerd.")
 
-    # --- 2. INDIVIDUELE DAG-PLOTS ---
+    # --- PLOT 2: INDIVIDUELE DAG-PLOTS ---
     if raw_data is not None:
         for _, trade in df_trades.iterrows():
             trade_date = trade['entry_time'].date()
             file_name = f"{trade_date}.png"
             file_path = os.path.join(plot_dir, file_name)
             
-            # Sla over als de plot al bestaat
             if os.path.exists(file_path):
                 continue
                 
@@ -104,21 +111,18 @@ def generate_performance_plots():
             
             if not day_data.empty:
                 plt.figure(figsize=(10, 5))
-                plt.plot(day_data['time'], day_data['close_bid'], color='blue', alpha=0.5, label='Olieprijs')
+                plt.plot(day_data['time'], day_data['close_bid'], color='blue', alpha=0.4, label='Olieprijs')
                 
-                # Markeer Entry
+                # Entry & Exit markeringen
                 plt.scatter(trade['entry_time'], trade['entry_p'], color='green', marker='^', s=100, label=f"Entry ({trade['side']})", zorder=5)
-                
-                # Markeer Exit
                 if not pd.isna(trade['exit_time']):
                     exit_t = pd.to_datetime(trade['exit_time'])
                     plt.scatter(exit_t, trade['exit_p'], color='red', marker='v', s=100, label=f"Exit ({trade['exit_reason']})", zorder=5)
                 
-                plt.title(f"Trade Analyse: {trade_date} | Return: {trade['return']:.2%}")
+                plt.title(f"Trade Detail: {trade_date} | Resultaat: {trade['return']:.2%}")
                 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
                 plt.grid(True, alpha=0.2)
                 plt.legend()
-                
                 plt.savefig(file_path, bbox_inches='tight')
                 plt.close()
                 print(f"Dagplot opgeslagen: {file_name}")
