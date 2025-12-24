@@ -11,11 +11,11 @@ matplotlib.use('Agg')
 def download_latest_csv():
     user = "Stijnknoop"
     repo = "crudeoil"
-    branch = "master"
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
     
-    api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref={branch}"
+    # Haal de lijst met bestanden op uit de master branch
+    api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref=master"
     response = requests.get(api_url, headers=headers)
     
     if response.status_code != 200:
@@ -25,7 +25,7 @@ def download_latest_csv():
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
     
     if not csv_file:
-        raise Exception("Geen CSV-bestand gevonden in de repository.")
+        raise Exception("Geen CSV-bestand gevonden.")
         
     print(f"Koers data ophalen voor visualisatie: {csv_file['name']}...")
     return pd.read_csv(csv_file['download_url'])
@@ -49,19 +49,18 @@ def generate_visuals():
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # --- 1. DAGELIJKS PLOTS (INCLUSIEF PENDING) ---
+    # --- 1. DAGELIJKS PLOTS (MET LIVE INDICATOR) ---
     for _, trade in logs.iterrows():
-        # Sla alleen over als er echt geen trade was
         if pd.isna(trade.get('entry_time')) or trade.get('exit_reason') == "No Trade":
             continue
 
         entry_dt = pd.to_datetime(trade['entry_time'])
         file_date = entry_dt.strftime('%Y-%m-%d')
         plot_filename = os.path.join(output_dir, f"plot_{file_date}.png")
-
-        # We overschrijven de plot ALTIJD als hij "Pending" is, zodat hij ververst
+        
         is_pending = trade.get('exit_reason') == "Data End (Pending)"
         
+        # Forceer her-creatie als het pending is om de blauwe stip te updaten
         if not os.path.exists(plot_filename) or is_pending:
             day_data = df_raw[df_raw['time'].dt.date == entry_dt.date()].sort_values('time')
             
@@ -69,62 +68,57 @@ def generate_visuals():
                 plt.figure(figsize=(12, 6))
                 plt.plot(day_data['time'], day_data['close_bid'], color='black', alpha=0.3, label='Koers')
                 
-                # Entry
+                # Entry (Blauwe pijl omhoog)
                 plt.scatter(pd.to_datetime(trade['entry_time']), trade['entry_p'], 
                             marker='^', color='blue', s=100, label='Entry', zorder=5)
                 
-                # Exit (gebruik laatste data punt als hij pending is)
-                exit_time = trade.get('exit_time')
-                exit_p = trade.get('exit_p')
-                
-                # Als er geen exit_p is (omdat het script nog loopt), pakken we de laatste prijs van de dag
-                if pd.isna(exit_p) or is_pending:
-                    exit_time = day_data['time'].iloc[-1]
-                    exit_p = day_data['close_bid'].iloc[-1]
-                    status_label = f"LOPENDE TRADE (Nu: {trade['return']:.2%})"
+                if is_pending:
+                    # LOPENDE TRADE: Dikke blauwe stip op de laatste prijs
+                    current_p = day_data['close_bid'].iloc[-1]
+                    current_t = day_data['time'].iloc[-1]
+                    plt.scatter(current_t, current_p, color='dodgerblue', s=200, 
+                                edgecolors='white', linewidths=2, label=f'LIVE ({trade["return"]:.2%})', zorder=6)
+                    plt.title(f"Trade Detail: {file_date} | STATUS: LIVE | Reden: Pending")
                 else:
-                    status_label = f"EXIT ({trade['return']:.2%})"
-
-                exit_color = 'green' if trade['return'] > 0 else 'red'
-                plt.scatter(pd.to_datetime(exit_time), exit_p, 
-                            marker='x', color=exit_color, s=120, label=status_label, zorder=5)
+                    # AFGERONDE TRADE: Rood/Groen kruisje
+                    exit_color = 'green' if trade['return'] > 0 else 'red'
+                    plt.scatter(pd.to_datetime(trade['exit_time']), trade['exit_p'], 
+                                marker='x', color=exit_color, s=120, label=f'Exit ({trade["return"]:.2%})', zorder=5)
+                    plt.title(f"Trade Detail: {file_date} | STATUS: GESLOTEN | Reden: {trade['exit_reason']}")
                 
-                plt.title(f"Trade Detail: {file_date} | Status: {trade['exit_reason']}")
-                plt.legend()
+                plt.legend(loc='upper left')
                 plt.grid(True, alpha=0.15)
                 plt.savefig(plot_filename)
                 plt.close()
 
-    # --- 2. EQUITY CURVE (INCLUSIEF PENDING) ---
-    print("Equity Curve aan het bijwerken inclusief lopende trades...")
+    # --- 2. EQUITY CURVE (LIVE UPDATE) ---
+    print("Equity Curve aan het bijwerken...")
     RISK_PER_TRADE = 0.02
     FIXED_SL = 0.004
     equity = [1.0]
     
-    # We nemen hier ALLE regels behalve "No Trade"
-    trades_for_equity = logs[logs['exit_reason'] != "No Trade"]
+    # Neem alle trades mee behalve 'No Trade'
+    valid_trades = logs[logs['exit_reason'] != "No Trade"]
     
-    for r in trades_for_equity['return'].values:
+    for r in valid_trades['return'].values:
         if not pd.isna(r):
             actual_gain = (r / FIXED_SL) * RISK_PER_TRADE
             equity.append(equity[-1] * (1 + actual_gain))
 
     plt.figure(figsize=(10, 5))
-    plt.plot(equity, color='darkgreen', lw=2.5)
+    plt.plot(equity, color='darkgreen', lw=2.5, label='Portefeuille Waarde')
     plt.axhline(y=1.0, color='black', linestyle='--', alpha=0.3)
     
-    # Laatste waarde markeren als tekst
-    current_val = equity[-1]
-    plt.annotate(f'{current_val:.2f}', xy=(len(equity)-1, current_val), xytext=(5, 5),
-                 textcoords='offset points', color='darkgreen', weight='bold')
+    # Laatste punt markeren (vandaag)
+    plt.scatter(len(equity)-1, equity[-1], color='darkgreen', s=50)
+    plt.annotate(f'Nu: {equity[-1]:.3f}', xy=(len(equity)-1, equity[-1]), 
+                 xytext=(10, 0), textcoords='offset points', weight='bold')
     
-    plt.title(f"Live Equity Curve (Incl. Pending)\nLaatste update: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    plt.title(f"Live Portfolio Performance (Incl. Open Trades)\nUpdate: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     plt.grid(True, which='both', linestyle='-', alpha=0.1)
-    plt.ylabel("Relatieve Waarde")
-    plt.xlabel("Aantal Trades")
-    
     plt.savefig(equity_path, dpi=150)
     plt.close()
+    print(f"Visualisaties voltooid.")
 
 if __name__ == "__main__":
     generate_visuals()
