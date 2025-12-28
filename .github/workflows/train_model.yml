@@ -1,7 +1,8 @@
 name: Train and Store Model
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Veranderd naar een vaste naam zodat deze workflow en oil_report op elkaar wachten
+  group: crude-oil-chain 
   cancel-in-progress: false
 
 on:
@@ -9,7 +10,7 @@ on:
     workflows: ["Run Python script twice per day"]
     types:
       - completed
-  workflow_dispatch: # Zodat je hem ook nog handmatig kunt starten
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,6 +28,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Nodig voor de rebase
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -37,7 +40,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests pandas numpy scikit-learn joblib scipy matplotlib
-
 
       - name: Create Model directory
         run: mkdir -p Model
@@ -51,6 +53,12 @@ jobs:
         run: |
           git config --global user.name 'Model Training Bot'
           git config --global user.email 'bot@trading.com'
+          
+          # MINIMALE TOEVOEGING: Haal wijzigingen op van de andere workflow
+          git pull origin master --rebase
+          
           git add Model/
           git commit -m "Update Random Forest Model: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen"
-          git push
+          
+          # Push nu de samengevoegde versie
+          git push origin master
