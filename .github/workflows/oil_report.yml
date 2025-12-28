@@ -18,7 +18,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success' && 
       (github.event.workflow_run.event == 'workflow_dispatch' || 
       contains(github.event.workflow_run.triggering_actor.login, 'github-actions')) &&
-      format('{0}', github.event.workflow_run.updated_at) > format('{0}', '20:00')
+      format('{0}', github.event.workflow_run.updated_at) > format('{0}', '16:00')
 
     steps:
       - name: Checkout repository
