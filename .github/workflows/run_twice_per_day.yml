@@ -5,8 +5,8 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 7 * * *'   # 09:00 NL tijd (ongeveer)
-    - cron: '0 19 * * *'  # 21:00 NL tijd (ongeveer)
+    - cron: '15 10 * * *'   # 09:00 NL tijd (ongeveer)
+    - cron: '15 22 * * *'  # 21:00 NL tijd (ongeveer)
   workflow_dispatch:
 
 jobs:
