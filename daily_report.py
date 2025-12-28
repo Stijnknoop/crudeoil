@@ -177,52 +177,46 @@ else:
                     day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": reason})
                     active = False; break
 
-        # --- VISUALISATIE PER DAG ---
-        fig, axs = plt.subplots(3, 1, figsize=(15, 18), sharex=False)
-        fig.suptitle(f"Analyse & Simulatie: {current_key}", fontsize=20, fontweight='bold')
-
-        # Plot 1: Training Data
+        # --- GEFIXTE VISUALISATIE: 3 SUBPLOTS ---
+        fig, axes = plt.subplots(3, 1, figsize=(12, 18))
+        
+        # 1. Training Plot
         for k in train_keys:
-            df_hist = dag_dict[k]
-            axs[0].plot(df_hist['time'], df_hist['close_bid'], color='blue', alpha=0.2)
-        axs[0].set_title(f"Training Fase ({len(train_keys)} dagen)", fontsize=14)
-        axs[0].set_ylabel("Prijs (Bid)")
-        axs[0].grid(True, alpha=0.3)
+            temp_df = dag_dict[k]
+            axes[0].plot(pd.to_datetime(temp_df['time']), temp_df['close_bid'], color='blue', alpha=0.3)
+        axes[0].set_title(f"Training Fase ({len(train_keys)} dagen)")
+        axes[0].grid(True)
 
-        # Plot 2: Validatie Data
+        # 2. Validatie Plot
         for k in val_keys:
-            df_val = dag_dict[k]
-            axs[1].plot(df_val['time'], df_val['close_bid'], color='orange', alpha=0.4)
-        axs[1].set_title(f"Validatie Fase ({len(val_keys)} dagen) - Threshold Bepaling", fontsize=14)
-        axs[1].set_ylabel("Prijs (Bid)")
-        axs[1].grid(True, alpha=0.3)
+            temp_df = dag_dict[k]
+            axes[1].plot(pd.to_datetime(temp_df['time']), temp_df['close_bid'], color='orange', alpha=0.5)
+        axes[1].set_title(f"Validatie Fase ({len(val_keys)} dagen)")
+        axes[1].grid(True)
 
-        # Plot 3: Dag Simulatie met Trade Markers en Achtergrondkleur
-        axs[2].plot(df_day['time'], df_day['close_bid'], color='black', label='Bid Prijs', linewidth=1.5)
+        # 3. Real World / Dag Simulatie Plot
+        axes[2].plot(pd.to_datetime(df_day['time']), df_day['close_bid'], color='black', label='Prijs')
         
         if day_res['exit_reason'] != "No Trade":
-            e_t = pd.to_datetime(day_res['entry_time'])
-            x_t = pd.to_datetime(day_res['exit_time'])
-            color = 'green' if day_res['side'] == 'Long' else 'red'
-            
-            # Markers
-            axs[2].scatter(e_t, day_res['entry_p'], color=color, marker='^', s=200, label=f'Entry {day_res["side"]}', zorder=5)
-            axs[2].scatter(x_t, day_res['exit_p'], color='black', marker='x', s=150, label=f'Exit ({day_res["exit_reason"]})', zorder=5)
-            
-            # Trade highlight op achtergrond
-            axs[2].axvspan(e_t, x_t, color=color, alpha=0.15, label='In Trade')
-            
-        axs[2].set_title(f"Simulatie Resultaat: {day_res['return']:.4%}", fontsize=14)
-        axs[2].set_ylabel("Prijs")
-        axs[2].legend(loc='best')
-        axs[2].grid(True, alpha=0.3)
+            et = pd.to_datetime(day_res['entry_time'])
+            xt = pd.to_datetime(day_res['exit_time'])
+            # Achtergrondkleur voor trade zone
+            color_zone = 'green' if day_res['side'] == 'Long' else 'red'
+            axes[2].axvspan(et, xt, color=color_zone, alpha=0.1, label='In Trade')
+            # Entry/Exit markers
+            axes[2].scatter(et, day_res['entry_p'], color=color_zone, marker='^', s=100)
+            axes[2].scatter(xt, day_res['exit_p'], color='black', marker='x', s=100)
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.96])
+        axes[2].set_title(f"Echte Wereld Simulatie: {current_key} (Return: {day_res['return']:.4%})")
+        axes[2].legend()
+        axes[2].grid(True)
+
+        plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"plot_{current_key}.png"))
         plt.close()
 
-        # Opslaan van resultaat
+        # Update logs
         existing_logs = pd.concat([existing_logs, pd.DataFrame([day_res])], ignore_index=True)
         existing_logs.to_csv(log_path, index=False)
 
-    print(f"--- VOLTOOID --- CSV en Plots bijgewerkt in '{output_dir}'.")
+print(f"--- VOLTOOID --- Bestanden opgeslagen in {output_dir}")
