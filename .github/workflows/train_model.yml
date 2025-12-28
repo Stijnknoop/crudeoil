@@ -1,9 +1,11 @@
 name: Train and Store Model
 
 on:
-  schedule:
-    - cron: '30 22 * * *' # Draait om 23:30 NL tijd (23:15 UTC)
-  workflow_dispatch:      # Handmatige knop
+  workflow_run:
+    workflows: ["Run Python script twice per day"]
+    types:
+      - completed
+  workflow_dispatch: # Zodat je hem ook nog handmatig kunt starten
 
 permissions:
   contents: write
