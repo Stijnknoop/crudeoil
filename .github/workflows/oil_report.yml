@@ -1,9 +1,11 @@
 name: Oil Trading Daily Report
 
 on:
-  schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["Run Python script twice per day"]
+    types:
+      - completed
+  workflow_dispatch: # Zodat je hem ook nog handmatig kunt starten
 
 permissions:
   contents: write
