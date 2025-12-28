@@ -4,6 +4,7 @@ import numpy as np
 import os
 import re
 from sklearn.ensemble import RandomForestRegressor
+import matplotlib.pyplot as plt
 
 import matplotlib
 matplotlib.use('Agg')
@@ -99,7 +100,6 @@ if not os.path.exists(output_dir):
 if os.path.exists(log_path):
     print(f"Log gevonden. Opschonen van pending entries...")
     existing_logs = pd.read_csv(log_path)
-    # Verwijder pending trades om ze vandaag opnieuw te berekenen met volledige data
     existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"].copy()
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
@@ -113,7 +113,6 @@ if not new_days:
     print("Geen nieuwe dagen om te verwerken.")
 else:
     print(f"Nieuwe dagen voor analyse: {new_days}")
-    new_records = []
     
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
@@ -123,24 +122,20 @@ else:
         history_keys = sorted_keys[history_start:idx]
         total_len = len(history_keys)
         
-        # --- BEVEILIGING: START PAS NA 20 DAGEN HISTORIE ---
         if total_len < 20:
             print(f"Overslaan: {current_key} (Historie {total_len} < 20 dagen)")
             continue
             
-        # Split: 75% train / 25% val
         split_point = int(total_len * 0.75)
         train_keys = history_keys[:split_point]
         val_keys = history_keys[split_point:]
         
-        # Model trainen met random_state voor stabiliteit
         X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
         if X_tr is None: continue
             
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
         
-        # Validatie voor drempelwaarde (95e percentiel = actiever)
         X_val, _, _ = get_xy(val_keys, dag_dict)
         threshold_pct = 95
         
@@ -151,7 +146,6 @@ else:
             t_l = np.percentile(m_l.predict(X_tr), threshold_pct)
             t_s = np.percentile(m_s.predict(X_tr), threshold_pct)
         
-        # Dag simulatie
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
         bids, asks, times, hours = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values, df_day['hour'].values
@@ -171,7 +165,6 @@ else:
                         curr_sl = -0.004
             else:
                 r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
-                # Trailing stop logic
                 if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
                 
                 is_data_end = (j == len(bids)-2)
@@ -183,9 +176,53 @@ else:
                     if is_data_end and not (r >= 0.005 or r <= curr_sl): reason = "Data End (Pending)"
                     day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": reason})
                     active = False; break
-                    
-        new_records.append(day_res)
 
-    final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
-    final_df.to_csv(log_path, index=False)
-    print(f"--- VOLTOOID --- CSV bijgewerkt. Totaal trades in log: {len(final_df)}")
+        # --- VISUALISATIE PER DAG ---
+        fig, axs = plt.subplots(3, 1, figsize=(15, 18), sharex=False)
+        fig.suptitle(f"Analyse & Simulatie: {current_key}", fontsize=20, fontweight='bold')
+
+        # Plot 1: Training Data
+        for k in train_keys:
+            df_hist = dag_dict[k]
+            axs[0].plot(df_hist['time'], df_hist['close_bid'], color='blue', alpha=0.2)
+        axs[0].set_title(f"Training Fase ({len(train_keys)} dagen)", fontsize=14)
+        axs[0].set_ylabel("Prijs (Bid)")
+        axs[0].grid(True, alpha=0.3)
+
+        # Plot 2: Validatie Data
+        for k in val_keys:
+            df_val = dag_dict[k]
+            axs[1].plot(df_val['time'], df_val['close_bid'], color='orange', alpha=0.4)
+        axs[1].set_title(f"Validatie Fase ({len(val_keys)} dagen) - Threshold Bepaling", fontsize=14)
+        axs[1].set_ylabel("Prijs (Bid)")
+        axs[1].grid(True, alpha=0.3)
+
+        # Plot 3: Dag Simulatie met Trade Markers en Achtergrondkleur
+        axs[2].plot(df_day['time'], df_day['close_bid'], color='black', label='Bid Prijs', linewidth=1.5)
+        
+        if day_res['exit_reason'] != "No Trade":
+            e_t = pd.to_datetime(day_res['entry_time'])
+            x_t = pd.to_datetime(day_res['exit_time'])
+            color = 'green' if day_res['side'] == 'Long' else 'red'
+            
+            # Markers
+            axs[2].scatter(e_t, day_res['entry_p'], color=color, marker='^', s=200, label=f'Entry {day_res["side"]}', zorder=5)
+            axs[2].scatter(x_t, day_res['exit_p'], color='black', marker='x', s=150, label=f'Exit ({day_res["exit_reason"]})', zorder=5)
+            
+            # Trade highlight op achtergrond
+            axs[2].axvspan(e_t, x_t, color=color, alpha=0.15, label='In Trade')
+            
+        axs[2].set_title(f"Simulatie Resultaat: {day_res['return']:.4%}", fontsize=14)
+        axs[2].set_ylabel("Prijs")
+        axs[2].legend(loc='best')
+        axs[2].grid(True, alpha=0.3)
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.96])
+        plt.savefig(os.path.join(output_dir, f"plot_{current_key}.png"))
+        plt.close()
+
+        # Opslaan van resultaat
+        existing_logs = pd.concat([existing_logs, pd.DataFrame([day_res])], ignore_index=True)
+        existing_logs.to_csv(log_path, index=False)
+
+    print(f"--- VOLTOOID --- CSV en Plots bijgewerkt in '{output_dir}'.")
