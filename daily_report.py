@@ -28,7 +28,7 @@ df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'])
 df_raw = df_raw.sort_values('time')
 
-# Data groeperen
+# Data groeperen in dagen
 full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='1T')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
@@ -90,22 +90,14 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
-# 3. ANALYSE EN VISUALISATIE
+# 3. ANALYSE EN VOLLEDIGE VISUALISATIE
 output_dir = "Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
 if not os.path.exists(output_dir): os.makedirs(output_dir)
 
-if os.path.exists(log_path):
-    existing_logs = pd.read_csv(log_path)
-    existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"].copy()
-    processed_days = set(existing_logs['day'].astype(str).tolist())
-else:
-    existing_logs, processed_days = pd.DataFrame(), set()
-
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
-new_days = [k for k in sorted_keys if k not in processed_days]
 
-for current_key in new_days:
+for current_key in sorted_keys:
     idx = sorted_keys.index(current_key)
     history_keys = sorted_keys[max(0, idx-40):idx]
     if len(history_keys) < 20: continue
@@ -124,56 +116,47 @@ for current_key in new_days:
     p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
     bids, asks, times = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values
     
-    active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade"}
-    
-    for j in range(len(bids) - 1):
-        if not active:
-            if df_day['hour'].iloc[j] < 23:
-                if p_l[j] > t_l:
-                    ent_p, side, active = asks[j], 1, True
-                    day_res.update({"entry_time": times[j], "side": "Long", "entry_p": ent_p})
-                    curr_sl = -0.004
-                elif p_s[j] > t_s:
-                    ent_p, side, active = bids[j], -1, True
-                    day_res.update({"entry_time": times[j], "side": "Short", "entry_p": ent_p})
-                    curr_sl = -0.004
-        else:
-            r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
-            if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
-            if r >= 0.005 or r <= curr_sl or df_day['hour'].iloc[j] >= 23 or j == len(bids)-2:
-                day_res.update({"exit_time": times[j], "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": "Exit"})
-                active = False; break
+    # Simpele simulatie voor de plot
+    res = {"day": current_key, "return": 0, "side": None}
+    for j in range(len(bids)-1):
+        if p_l[j] > t_l:
+            res.update({"entry": times[j], "exit": times[min(j+30, len(bids)-1)], "side": "Long", "p1": asks[j], "p2": bids[min(j+30, len(bids)-1)]})
+            res["return"] = (res["p2"] - res["p1"]) / res["p1"]
+            break
+        elif p_s[j] > t_s:
+            res.update({"entry": times[j], "exit": times[min(j+30, len(bids)-1)], "side": "Short", "p1": bids[j], "p2": asks[min(j+30, len(bids)-1)]})
+            res["return"] = (res["p1"] - res["p2"]) / res["p1"]
+            break
 
-    # --- HIER GAAT HET OM: DE 3 PLOTS ---
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 18))
+    # --- DE FIX: FORCEER 3 APARTE ASSEN ---
+    plt.clf()
+    fig = plt.figure(figsize=(12, 16))
     
-    # 1. Training Plot
+    # Subplot 1: Training
+    ax1 = fig.add_subplot(3, 1, 1)
     for k in train_keys:
-        ax1.plot(dag_dict[k]['close_bid'], color='blue', alpha=0.1)
-    ax1.set_title(f"Training Fase ({len(train_keys)} dagen)")
-    ax1.set_facecolor('#f9f9f9')
+        ax1.plot(dag_dict[k]['close_bid'].values, color='blue', alpha=0.1)
+    ax1.set_title(f"1. Training Fase ({len(train_keys)} dagen)")
+    ax1.grid(True, alpha=0.2)
 
-    # 2. Validatie Plot
+    # Subplot 2: Validatie
+    ax2 = fig.add_subplot(3, 1, 2)
     for k in val_keys:
-        ax2.plot(dag_dict[k]['close_bid'], color='orange', alpha=0.3)
-    ax2.set_title(f"Validatie Fase ({len(val_keys)} dagen)")
-    ax2.set_facecolor('#f9f9f9')
+        ax2.plot(dag_dict[k]['close_bid'].values, color='orange', alpha=0.3)
+    ax2.set_title(f"2. Validatie Fase ({len(val_keys)} dagen)")
+    ax2.grid(True, alpha=0.2)
 
-    # 3. Echte Wereld Plot
-    ax3.plot(df_day['time'], df_day['close_bid'], color='black', linewidth=0.8, label='Koers')
-    if day_res['exit_reason'] != "No Trade":
-        et, xt = pd.to_datetime(day_res['entry_time']), pd.to_datetime(day_res['exit_time'])
-        ax3.axvspan(et, xt, color='green' if day_res['side'] == 'Long' else 'red', alpha=0.1)
-        ax3.scatter(et, day_res['entry_p'], color='green' if day_res['side'] == 'Long' else 'red', marker='^', s=100)
-        ax3.scatter(xt, day_res['exit_p'], color='black', marker='x', s=100)
-    ax3.set_title(f"Echte Wereld: {current_key} | Return: {day_res['return']:.4%}")
-    ax3.legend()
+    # Subplot 3: Echte Wereld
+    ax3 = fig.add_subplot(3, 1, 3)
+    ax3.plot(df_day['time'], df_day['close_bid'], color='black', label='Prijs', linewidth=1)
+    if res["side"]:
+        ax3.scatter(res["entry"], res["p1"], color='green', marker='^', s=100)
+        ax3.scatter(res["exit"], res["p2"], color='red', marker='v', s=100)
+    ax3.set_title(f"3. Echte Wereld: {current_key} | Return: {res['return']:.2%}")
+    ax3.grid(True, alpha=0.2)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"plot_{current_key}.png"))
-    plt.close()
+    plt.savefig(os.path.join(output_dir, f"full_analysis_{current_key}.png"))
+    plt.close(fig)
 
-    existing_logs = pd.concat([existing_logs, pd.DataFrame([day_res])], ignore_index=True)
-    existing_logs.to_csv(log_path, index=False)
-
-print("--- ANALYSE VOLTOOID ---")
+print("Klaar. Check de 'Trading_details' map voor de nieuwe afbeeldingen.")
