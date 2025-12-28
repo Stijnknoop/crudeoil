@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use('Agg')
 
 # ==============================================================================
-# 1. FUNCTIES (ONGECWIJZIGD)
+# 1. FUNCTIES (KOPIE VAN JE ORIGINELE LOGICA)
 # ==============================================================================
 def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
@@ -73,7 +73,7 @@ def calculate_dynamic_threshold(correlation_score):
 # ==============================================================================
 # 2. DATA VOORBEREIDEN
 # ==============================================================================
-print("--- START MODEL MAKER & VERIFICATIE ---")
+print("--- START MODEL MAKER & INTEGRITEITS-CHECK ---")
 df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'])
 df_raw = df_raw.sort_values('time')
@@ -108,12 +108,10 @@ sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).gro
 # ==============================================================================
 # 3. TRAINING OP [-41:-1] EN OPSLAAN PKL
 # ==============================================================================
-# We trainen op de 40 dagen VOORDAT de laatste dag begint
 history_keys = sorted_keys[-41:-1]
 test_day_key = sorted_keys[-1]
 
 print(f"Training op: {history_keys[0]} t/m {history_keys[-1]}")
-print(f"Simulatie op: {test_day_key}")
 
 split_point = int(len(history_keys) * 0.75)
 train_keys = history_keys[:split_point]
@@ -122,30 +120,42 @@ val_keys = history_keys[split_point:]
 X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
 X_val, yl_val, ys_val = get_xy(val_keys, dag_dict)
 
-m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
-m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
+m_l_temp = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
+m_s_temp = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
 
-# Drempels bepalen
-pred_val_l = m_l.predict(X_val); pred_val_s = m_s.predict(X_val)
+pred_val_l = m_l_temp.predict(X_val); pred_val_s = m_s_temp.predict(X_val)
 corr_l, _ = spearmanr(pred_val_l, yl_val); corr_s, _ = spearmanr(pred_val_s, ys_val)
 pct_l = calculate_dynamic_threshold(corr_l); pct_s = calculate_dynamic_threshold(corr_s)
 
-t_l = np.percentile(m_l.predict(X_tr), pct_l)
-t_s = np.percentile(m_s.predict(X_tr), pct_s)
+t_l_temp = np.percentile(m_l_temp.predict(X_tr), pct_l)
+t_s_temp = np.percentile(m_s_temp.predict(X_tr), pct_s)
 
-# OPSLAAN
+# WEGSCHRIJVEN NAAR DISK
 os.makedirs("Model", exist_ok=True)
+model_path = "Model/live_trading_model.pkl"
 joblib.dump({
-    "model_l": m_l, "model_s": m_s, "t_l": t_l, "t_s": t_s,
-    "features": ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
-}, "Model/live_trading_model.pkl")
+    "model_l": m_l_temp, 
+    "model_s": m_s_temp, 
+    "t_l": t_l_temp, 
+    "t_s": t_s_temp,
+    "f_selected": ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
+}, model_path)
 
-print(f"Model opgeslagen. Thresholds: L={t_l:.6f}, S={t_s:.6f}")
+print(f"Model succesvol weggeschreven naar {model_path}")
 
 # ==============================================================================
-# 4. SIMULATIE VAN LAATSTE DAG [-1] VOOR VERIFICATIE
+# 4. HERLADEN UIT PKL EN SIMULATIE LAATSTE DAG [-1]
 # ==============================================================================
-f_selected = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
+print(f"Model herladen van disk voor verificatie op: {test_day_key}...")
+loaded_data = joblib.load(model_path)
+
+# Gebruik de herladen objecten
+m_l = loaded_data["model_l"]
+m_s = loaded_data["model_s"]
+t_l = loaded_data["t_l"]
+t_s = loaded_data["t_s"]
+f_selected = loaded_data["f_selected"]
+
 df_day = add_features(dag_dict[test_day_key]).reset_index(drop=True)
 p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
 bids, asks, times, hours = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values, df_day['hour'].values
@@ -157,11 +167,11 @@ for j in range(len(bids) - 1):
         if hours[j] < 23:
             if p_l[j] > t_l:
                 ent_p, side, active = asks[j], 1, True
-                res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
+                res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p, "pred": p_l[j], "thresh": t_l})
                 curr_sl = -0.004
             elif p_s[j] > t_s:
                 ent_p, side, active = bids[j], -1, True
-                res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
+                res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p, "pred": p_s[j], "thresh": t_s})
                 curr_sl = -0.004
     else:
         r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
@@ -171,6 +181,7 @@ for j in range(len(bids) - 1):
             res.update({"exit_time": str(times[j]), "return": r, "exit_reason": "Closed"})
             active = False; break
 
-print("\n--- SIMULATIE RESULTAAT LAATSTE DAG ---")
+print("\n--- RESULTAAT NA HERLADEN UIT BESTAND ---")
 print(res)
-print("\nVergelijk dit met de laatste regel in je trading_logs.csv!")
+print(f"\nVerificatie voltooid. Als de entry_time ({res.get('entry_time')}) en side ({res.get('side')}) "
+      "overeenkomen met je daily_report.py, dan werkt de opslag en herlading perfect.")
