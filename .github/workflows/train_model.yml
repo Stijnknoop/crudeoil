@@ -1,5 +1,9 @@
 name: Train and Store Model
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 on:
   workflow_run:
     workflows: ["Run Python script twice per day"]
