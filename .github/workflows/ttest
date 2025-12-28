@@ -30,7 +30,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # Vervang 'jouw_script_naam.py' door de echte naam van je bestand
-        python jouw_script_naam.py
+        python verify_model_logic.py.py
 
     - name: Commit and push model file
       run: |
