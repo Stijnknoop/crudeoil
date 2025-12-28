@@ -1,8 +1,7 @@
 name: Train and Store Model
 
 concurrency:
-  # Veranderd naar een vaste naam zodat deze workflow en oil_report op elkaar wachten
-  group: crude-oil-chain 
+  group: crude-oil-chain
   cancel-in-progress: false
 
 on:
@@ -29,7 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0 # Nodig voor de rebase
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -49,16 +48,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python train_live_forest.py
 
-      - name: Push Model to Repo
+      - name: Push Model naar Repo
         run: |
           git config --global user.name 'Model Training Bot'
           git config --global user.email 'bot@trading.com'
           
-          # MINIMALE TOEVOEGING: Haal wijzigingen op van de andere workflow
-          git pull origin master --rebase
-          
+          # Eerst toevoegen en commiten om 'unstaged changes' fout te voorkomen
           git add Model/
-          git commit -m "Update Random Forest Model: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen"
+          git commit -m "Update Random Forest Model: $(date +'%Y-%m-%d') [skip ci]" || echo "Geen wijzigingen"
           
-          # Push nu de samengevoegde versie
+          # Nu pas rebasen om wijzigingen van andere workflows op te halen
+          git pull origin master --rebase
           git push origin master
