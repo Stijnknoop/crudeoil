@@ -7,10 +7,12 @@ import joblib
 from sklearn.ensemble import RandomForestRegressor
 from scipy.stats import spearmanr
 
-# ==============================================================================
-# 1. FUNCTIES (KOPIE VAN JOUW LOGICA)
-# ==============================================================================
+import matplotlib
+matplotlib.use('Agg')
 
+# ==============================================================================
+# 1. FUNCTIES (STRICTE KOPIE VAN JE LOGICA)
+# ==============================================================================
 def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
     repo = "crudeoil"
@@ -45,7 +47,9 @@ def add_features(df_in):
     df[f_cols] = df[f_cols].shift(1)
     return df.dropna()
 
-def get_xy(keys, d_dict, f_selected, HORIZON=30):
+def get_xy(keys, d_dict):
+    f_selected = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
+    HORIZON = 30
     X, yl, ys = [], [], []
     for k in keys:
         df_f = add_features(d_dict[k])
@@ -67,15 +71,13 @@ def calculate_dynamic_threshold(correlation_score):
         return 94.0
 
 # ==============================================================================
-# 2. MAIN EXECUTION (MODEL TRAINING VOOR LIVE GEBRUIK)
+# 2. DATA VOORBEREIDEN
 # ==============================================================================
-
-print("--- TRAINING LIVE MODEL START ---")
+print("--- START LIVE MODEL TRAINING ---")
 df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'])
 df_raw = df_raw.sort_values('time')
 
-# Data groeperen (exacte kopie logica)
 full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='1T')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
@@ -103,56 +105,43 @@ dag_dict = {f'dag_{i}': d[d['has_data']].reset_index(drop=True)
 
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 
-# Neem de laatste 40 dagen voor het live model
+# ==============================================================================
+# 3. TRAINING OP DE LAATSTE 40 DAGEN (PRODUCTIE)
+# ==============================================================================
+# Pak de laatste 40 beschikbare dagen voor optimale training voor morgen
 history_keys = sorted_keys[-40:]
-total_len = len(history_keys)
 
-if total_len < 20:
-    print(f"FOUT: Te weinig data ({total_len} dagen). Training gestopt.")
-else:
-    # 75/25 split voor dynamische threshold bepaling
-    split_point = int(total_len * 0.75)
-    train_keys = history_keys[:split_point]
-    val_keys = history_keys[split_point:]
-    
-    f_selected = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
-    
-    X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict, f_selected)
-    X_val, yl_val, ys_val = get_xy(val_keys, dag_dict, f_selected)
-    
-    if X_tr is not None:
-        # Training
-        m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
-        m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
-        
-        # Validatie voor thresholds
-        if X_val is not None:
-            pred_val_l = m_l.predict(X_val)
-            pred_val_s = m_s.predict(X_val)
-            corr_l, _ = spearmanr(pred_val_l, yl_val)
-            corr_s, _ = spearmanr(pred_val_s, ys_val)
-            pct_l = calculate_dynamic_threshold(corr_l)
-            pct_s = calculate_dynamic_threshold(corr_s)
-        else:
-            pct_l, pct_s = 96.0, 96.0
+print(f"Training op de LAATSTE 40 DAGEN: {history_keys[0]} t/m {history_keys[-1]}")
 
-        # Bereken de uiteindelijke threshold waarden
-        pred_tr_l = m_l.predict(X_tr)
-        pred_tr_s = m_s.predict(X_tr)
-        t_l = np.percentile(pred_tr_l, pct_l)
-        t_s = np.percentile(pred_tr_s, pct_s)
+split_point = int(len(history_keys) * 0.75)
+train_keys = history_keys[:split_point]
+val_keys = history_keys[split_point:]
 
-        # OPSLAAN
-        os.makedirs("Model", exist_ok=True)
-        model_package = {
-            "model_long": m_l,
-            "model_short": m_s,
-            "threshold_long": t_l,
-            "threshold_short": t_s,
-            "features": f_selected,
-            "last_training_day": sorted_keys[-1]
-        }
-        
-        joblib.dump(model_package, "Model/live_trading_model.pkl")
-        print(f"--- SUCCES --- Model opgeslagen voor {sorted_keys[-1]}")
-        print(f"Thresholds -> L: {t_l:.6f} (pct {pct_l}), S: {t_s:.6f} (pct {pct_s})")
+X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
+X_val, yl_val, ys_val = get_xy(val_keys, dag_dict)
+
+m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
+m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
+
+# Dynamische drempels bepalen op basis van validatie
+pred_val_l = m_l.predict(X_val); pred_val_s = m_s.predict(X_val)
+corr_l, _ = spearmanr(pred_val_l, yl_val); corr_s, _ = spearmanr(pred_val_s, ys_val)
+pct_l = calculate_dynamic_threshold(corr_l); pct_s = calculate_dynamic_threshold(corr_s)
+
+t_l = np.percentile(m_l.predict(X_tr), pct_l)
+t_s = np.percentile(m_s.predict(X_tr), pct_s)
+
+# OPSLAAN
+os.makedirs("Model", exist_ok=True)
+model_path = "Model/live_trading_model.pkl"
+joblib.dump({
+    "model_l": m_l, 
+    "model_s": m_s, 
+    "t_l": t_l, 
+    "t_s": t_s,
+    "f_selected": ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour'],
+    "trained_on_until": history_keys[-1]
+}, model_path)
+
+print(f"Productie-model opgeslagen. Thresholds: L={t_l:.6f}, S={t_s:.6f}")
+print("Het model is nu klaar voor de volgende handelsdag.")
