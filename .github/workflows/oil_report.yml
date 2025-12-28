@@ -20,9 +20,9 @@ jobs:
 
     if: >
       github.event.workflow_run.conclusion == 'success' && 
-      (github.event.workflow_run.event == 'workflow_dispatch' || 
-      contains(github.event.workflow_run.triggering_actor.login, 'github-actions')) &&
-      format('{0}', github.event.workflow_run.updated_at) > format('{0}', '16:00')
+      (github.event_name == 'workflow_dispatch' || 
+       github.event.workflow_run.event == 'workflow_dispatch' || 
+       format('{0}', github.event.workflow_run.updated_at) > format('{0}', '15:00'))
 
     steps:
       - name: Checkout repository
@@ -54,11 +54,7 @@ jobs:
         run: |
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
-          
-          # Eerst toevoegen en commiten om 'unstaged changes' fout te voorkomen
           git add Trading_details/
           git commit -m "Update logs en plots: $(date +'%Y-%m-%d') [skip ci]" || echo "Geen wijzigingen"
-          
-          # Nu pas rebasen om wijzigingen van andere workflows op te halen
           git pull origin master --rebase
           git push origin master
