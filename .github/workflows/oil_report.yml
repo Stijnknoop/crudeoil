@@ -35,25 +35,17 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Cache Python dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-v1
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       - name: Installeer afhankelijkheden
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary requests pandas numpy matplotlib scikit-learn scipy joblib
 
-      - name: Draai rapportage script (AI Analyse)
+      - name: Draai rapportage script
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python daily_report.py
 
-      - name: Genereer Trade Plots (Visualisatie)
+      - name: Genereer Trade Plots
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python generate_plots.py
@@ -63,9 +55,10 @@ jobs:
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
           
-          # Haal de allerlaatste status op (belangrijk als train_model.yml net klaar is)
-          git pull origin master --rebase
-          
+          # Eerst toevoegen en commiten om 'unstaged changes' fout te voorkomen
           git add Trading_details/
-          git commit -m "Update logs en plots: $(date +'%Y-%m-%d')" || echo "Geen wijzigingen"
+          git commit -m "Update logs en plots: $(date +'%Y-%m-%d') [skip ci]" || echo "Geen wijzigingen"
+          
+          # Nu pas rebasen om wijzigingen van andere workflows op te halen
+          git pull origin master --rebase
           git push origin master
