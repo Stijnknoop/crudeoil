@@ -7,7 +7,7 @@ from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
 
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg') # Nodig voor omgevingen zonder scherm, verwijdert foutmeldingen
 
 # 1. DATA OPHALEN
 def read_latest_csv_from_crudeoil():
@@ -98,12 +98,10 @@ if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
 if os.path.exists(log_path):
-    print(f"Log gevonden. Opschonen van pending entries...")
     existing_logs = pd.read_csv(log_path)
     existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"].copy()
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
-    print("Geen log gevonden. Nieuwe geschiedenis opbouwen.")
     existing_logs, processed_days = pd.DataFrame(), set()
 
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
@@ -112,19 +110,13 @@ new_days = [k for k in sorted_keys if k not in processed_days]
 if not new_days:
     print("Geen nieuwe dagen om te verwerken.")
 else:
-    print(f"Nieuwe dagen voor analyse: {new_days}")
-    
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
-        
-        # Bepaal historie (max 40 dagen)
         history_start = max(0, idx - 40)
         history_keys = sorted_keys[history_start:idx]
         total_len = len(history_keys)
         
-        if total_len < 20:
-            print(f"Overslaan: {current_key} (Historie {total_len} < 20 dagen)")
-            continue
+        if total_len < 20: continue
             
         split_point = int(total_len * 0.75)
         train_keys = history_keys[:split_point]
@@ -138,13 +130,8 @@ else:
         
         X_val, _, _ = get_xy(val_keys, dag_dict)
         threshold_pct = 95
-        
-        if X_val is not None and len(X_val) > 0:
-            t_l = np.percentile(m_l.predict(X_val), threshold_pct)
-            t_s = np.percentile(m_s.predict(X_val), threshold_pct)
-        else:
-            t_l = np.percentile(m_l.predict(X_tr), threshold_pct)
-            t_s = np.percentile(m_s.predict(X_tr), threshold_pct)
+        t_l = np.percentile(m_l.predict(X_val), threshold_pct) if X_val is not None else np.percentile(m_l.predict(X_tr), threshold_pct)
+        t_s = np.percentile(m_s.predict(X_val), threshold_pct) if X_val is not None else np.percentile(m_s.predict(X_tr), threshold_pct)
         
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
@@ -166,57 +153,48 @@ else:
             else:
                 r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
                 if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
-                
-                is_data_end = (j == len(bids)-2)
-                is_time_end = (hours[j] >= 23)
-                
-                if r >= 0.005 or r <= curr_sl or is_time_end or is_data_end:
-                    reason = "TP/SL"
-                    if is_time_end: reason = "EOD (23h)"
-                    if is_data_end and not (r >= 0.005 or r <= curr_sl): reason = "Data End (Pending)"
-                    day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": reason})
+                if r >= 0.005 or r <= curr_sl or hours[j] >= 23 or j == len(bids)-2:
+                    day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": "Exit"})
                     active = False; break
 
-        # --- GEFIXTE VISUALISATIE: 3 SUBPLOTS ---
+        # --- NIEUWE 3-SUBPLOT VISUALISATIE ---
+        plt.close('all')
         fig, axes = plt.subplots(3, 1, figsize=(12, 18))
         
-        # 1. Training Plot
+        # Plot 1: Training Fase (Overlay)
         for k in train_keys:
-            temp_df = dag_dict[k]
-            axes[0].plot(pd.to_datetime(temp_df['time']), temp_df['close_bid'], color='blue', alpha=0.3)
-        axes[0].set_title(f"Training Fase ({len(train_keys)} dagen)")
-        axes[0].grid(True)
+            tdf = dag_dict[k]
+            axes[0].plot(range(len(tdf)), tdf['close_bid'], color='blue', alpha=0.15)
+        axes[0].set_title(f"1. Training Fase ({len(train_keys)} dagen overlay)")
+        axes[0].grid(True, alpha=0.2)
 
-        # 2. Validatie Plot
+        # Plot 2: Validatie Fase (Overlay)
         for k in val_keys:
-            temp_df = dag_dict[k]
-            axes[1].plot(pd.to_datetime(temp_df['time']), temp_df['close_bid'], color='orange', alpha=0.5)
-        axes[1].set_title(f"Validatie Fase ({len(val_keys)} dagen)")
-        axes[1].grid(True)
+            vdf = dag_dict[k]
+            axes[1].plot(range(len(vdf)), vdf['close_bid'], color='orange', alpha=0.25)
+        axes[1].set_title(f"2. Validatie Fase ({len(val_keys)} dagen overlay)")
+        axes[1].grid(True, alpha=0.2)
 
-        # 3. Real World / Dag Simulatie Plot
+        # Plot 3: Echte Wereld (De specifieke dag)
         axes[2].plot(pd.to_datetime(df_day['time']), df_day['close_bid'], color='black', label='Prijs')
-        
         if day_res['exit_reason'] != "No Trade":
-            et = pd.to_datetime(day_res['entry_time'])
-            xt = pd.to_datetime(day_res['exit_time'])
-            # Achtergrondkleur voor trade zone
-            color_zone = 'green' if day_res['side'] == 'Long' else 'red'
-            axes[2].axvspan(et, xt, color=color_zone, alpha=0.1, label='In Trade')
-            # Entry/Exit markers
-            axes[2].scatter(et, day_res['entry_p'], color=color_zone, marker='^', s=100)
+            et, xt = pd.to_datetime(day_res['entry_time']), pd.to_datetime(day_res['exit_time'])
+            c = 'green' if day_res['side'] == 'Long' else 'red'
+            axes[2].axvspan(et, xt, color=c, alpha=0.1, label='In Trade')
+            axes[2].scatter(et, day_res['entry_p'], color=c, marker='^', s=100)
             axes[2].scatter(xt, day_res['exit_p'], color='black', marker='x', s=100)
-
-        axes[2].set_title(f"Echte Wereld Simulatie: {current_key} (Return: {day_res['return']:.4%})")
+        axes[2].set_title(f"3. Echte Wereld Simulatie: {current_key} (Return: {day_res['return']:.4%})")
         axes[2].legend()
-        axes[2].grid(True)
+        axes[2].grid(True, alpha=0.2)
 
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"plot_{current_key}.png"))
-        plt.close()
+        
+        # Optioneel: toon in notebook als je Agg niet gebruikt
+        # plt.show() 
 
-        # Update logs
+        # Logboek bijwerken
         existing_logs = pd.concat([existing_logs, pd.DataFrame([day_res])], ignore_index=True)
         existing_logs.to_csv(log_path, index=False)
 
-print(f"--- VOLTOOID --- Bestanden opgeslagen in {output_dir}")
+print(f"--- VOLTOOID --- Bestanden in '{output_dir}'")
