@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import os
 import re
+import joblib
 from sklearn.ensemble import RandomForestRegressor
 from scipy.stats import spearmanr
 from datetime import datetime
@@ -31,6 +32,7 @@ df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'])
 df_raw = df_raw.sort_values('time')
 
+# Data groeperen in dagen
 full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='1T')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
@@ -57,7 +59,7 @@ dag_dict = {f'dag_{i}': d[d['has_data']].reset_index(drop=True)
             for i, (day, d) in enumerate(df.groupby('trading_day'), start=1)}
 
 # ==============================================================================
-# 2. FEATURE ENGINEERING & HELPERS
+# 2. FEATURE ENGINEERING & HELPERS (STRICTE KOPIE LOGICA)
 # ==============================================================================
 def add_features(df_in):
     df = df_in.copy().sort_values('time')
@@ -105,7 +107,7 @@ def calculate_dynamic_threshold(correlation_score):
         return 94.0
 
 # ==============================================================================
-# 3. OPSCHONEN EN SELECTIE (FIX VOOR UPDATES)
+# 3. OPSCHONEN, ANALYSE EN CHRONOLOGISCHE OPSLAG
 # ==============================================================================
 output_dir = "Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
@@ -116,21 +118,19 @@ sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).gro
 
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
-    # VERWIJDER: 1. Alle pending trades, 2. De data van vandaag (moet altijd vers zijn)
-    # Zo dwingen we het script om deze opnieuw te simuleren
+    # Filter: Verwijder Pending EN vandaag om ze opnieuw te berekenen
     mask = (existing_logs['exit_reason'] != "Data End (Pending)") & \
-           (~existing_logs['entry_time'].astype(str).str.contains(today_str))
+           (~existing_logs['entry_time'].astype(str).str.contains(today_str, na=False))
     
     existing_logs = existing_logs[mask].copy()
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
     existing_logs, processed_days = pd.DataFrame(), set()
 
-# Nieuwe dagen zijn dagen die niet in de log staan OF de dag van vandaag
 new_days = [k for k in sorted_keys if k not in processed_days]
 
 if not new_days:
-    print("Geen nieuwe data om te verwerken.")
+    print("Geen nieuwe dagen om te verwerken.")
 else:
     print(f"Verwerken: {new_days}")
     new_records = []
@@ -141,7 +141,12 @@ else:
         history_keys = sorted_keys[history_start:idx]
         
         if len(history_keys) < 20:
-            print(f"Overslaan: {current_key} (Te weinig historie)")
+            # Voor dagen zonder genoeg historie maken we een leeg record voor de tijdlijn
+            df_temp = dag_dict[current_key]
+            new_records.append({
+                "day": current_key, "return": 0, "exit_reason": "No Trade (Init)",
+                "entry_time": str(df_temp['time'].iloc[0])
+            })
             continue
             
         split_point = int(len(history_keys) * 0.75)
@@ -154,7 +159,6 @@ else:
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
         
-        # Threshold bepalen
         if X_val is not None and len(X_val) > 10:
             corr_l, _ = spearmanr(m_l.predict(X_val), yl_val)
             corr_s, _ = spearmanr(m_s.predict(X_val), ys_val)
@@ -172,7 +176,7 @@ else:
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
         bids, asks, times, hours = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values, df_day['hour'].values
         
-        active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade"}
+        active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(times[0])}
         
         for j in range(len(bids) - 1):
             if not active:
@@ -201,7 +205,10 @@ else:
                     
         new_records.append(day_res)
 
+    # Samenvoegen en Chronologisch sorteren
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
+    final_df['entry_time'] = pd.to_datetime(final_df['entry_time'])
     final_df = final_df.sort_values('entry_time', ascending=True)
+    
     final_df.to_csv(log_path, index=False)
     print(f"--- VOLTOOID --- Log bijgewerkt. Totaal: {len(final_df)}")
