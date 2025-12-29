@@ -6,6 +6,7 @@ import re
 import joblib
 from sklearn.ensemble import RandomForestRegressor
 from scipy.stats import spearmanr
+from datetime import datetime
 
 import matplotlib
 matplotlib.use('Agg')
@@ -86,6 +87,12 @@ df[df.columns.difference(['has_data'])] = df[df.columns.difference(['has_data'])
 df = df.reset_index()
 
 df['date'] = df['time'].dt.date
+
+# --- NIEUW: FILTER VANDAAG ERUIT ---
+today_date = datetime.now().date()
+print(f"Huidige datum: {today_date}. Data van vandaag wordt uitgesloten voor training.")
+df = df[df['date'] < today_date].copy()
+
 valid_dates = df.groupby('date')['has_data'].any()
 valid_dates = valid_dates[valid_dates].index
 df = df[df['date'].isin(valid_dates)].copy()
@@ -108,7 +115,7 @@ sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).gro
 # ==============================================================================
 # 3. TRAINING OP DE LAATSTE 40 DAGEN (PRODUCTIE)
 # ==============================================================================
-# Pak de laatste 40 beschikbare dagen voor optimale training voor morgen
+# Pak de laatste 40 beschikbare VOLLEDIGE dagen
 history_keys = sorted_keys[-40:]
 
 print(f"Training op de LAATSTE 40 DAGEN: {history_keys[0]} t/m {history_keys[-1]}")
