@@ -12,7 +12,7 @@ import matplotlib
 matplotlib.use('Agg')
 
 # ==============================================================================
-# 1. FUNCTIES (STRICTE KOPIE VAN JE LOGICA)
+# 1. FUNCTIES
 # ==============================================================================
 def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
@@ -76,10 +76,12 @@ def calculate_dynamic_threshold(correlation_score):
 # ==============================================================================
 print("--- START LIVE MODEL TRAINING ---")
 df_raw = read_latest_csv_from_crudeoil()
-df_raw['time'] = pd.to_datetime(df_raw['time'])
-df_raw = df_raw.sort_values('time')
+# FIX: Gebruik ISO8601 voor robuustheid
+df_raw['time'] = pd.to_datetime(df_raw['time'], format='ISO8601', errors='coerce')
+df_raw = df_raw.dropna(subset=['time']).sort_values('time')
 
-full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='1T')
+# FIX: 'min' i.p.v. '1T'
+full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='min')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
 df = df.set_index('time')
@@ -88,9 +90,9 @@ df = df.reset_index()
 
 df['date'] = df['time'].dt.date
 
-# --- NIEUW: FILTER VANDAAG ERUIT ---
+# Filter vandaag eruit
 today_date = datetime.now().date()
-print(f"Huidige datum: {today_date}. Data van vandaag wordt uitgesloten voor training.")
+print(f"Huidige datum: {today_date}. Data van vandaag wordt uitgesloten.")
 df = df[df['date'] < today_date].copy()
 
 valid_dates = df.groupby('date')['has_data'].any()
@@ -113,12 +115,10 @@ dag_dict = {f'dag_{i}': d[d['has_data']].reset_index(drop=True)
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 
 # ==============================================================================
-# 3. TRAINING OP DE LAATSTE 40 DAGEN (PRODUCTIE)
+# 3. TRAINING
 # ==============================================================================
-# Pak de laatste 40 beschikbare VOLLEDIGE dagen
 history_keys = sorted_keys[-40:]
-
-print(f"Training op de LAATSTE 40 DAGEN: {history_keys[0]} t/m {history_keys[-1]}")
+print(f"Training op: {history_keys[0]} t/m {history_keys[-1]}")
 
 split_point = int(len(history_keys) * 0.75)
 train_keys = history_keys[:split_point]
@@ -130,7 +130,6 @@ X_val, yl_val, ys_val = get_xy(val_keys, dag_dict)
 m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
 m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
 
-# Dynamische drempels bepalen op basis van validatie
 pred_val_l = m_l.predict(X_val); pred_val_s = m_s.predict(X_val)
 corr_l, _ = spearmanr(pred_val_l, yl_val); corr_s, _ = spearmanr(pred_val_s, ys_val)
 pct_l = calculate_dynamic_threshold(corr_l); pct_s = calculate_dynamic_threshold(corr_s)
@@ -138,17 +137,24 @@ pct_l = calculate_dynamic_threshold(corr_l); pct_s = calculate_dynamic_threshold
 t_l = np.percentile(m_l.predict(X_tr), pct_l)
 t_s = np.percentile(m_s.predict(X_tr), pct_s)
 
-# OPSLAAN
+# ==============================================================================
+# 4. BESTAND VERWIJDEREN EN OPNIEUW OPSLAAN
+# ==============================================================================
 os.makedirs("Model", exist_ok=True)
 model_path = "Model/live_trading_model.pkl"
+
+if os.path.exists(model_path):
+    os.remove(model_path)
+    print(f"Oud model verwijderd: {model_path}")
+
 joblib.dump({
     "model_l": m_l, 
     "model_s": m_s, 
     "t_l": t_l, 
     "t_s": t_s,
     "f_selected": ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour'],
-    "trained_on_until": history_keys[-1]
+    "trained_on_until": history_keys[-1],
+    "generated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S') # Extra check
 }, model_path)
 
-print(f"Productie-model opgeslagen. Thresholds: L={t_l:.6f}, S={t_s:.6f}")
-print("Het model is nu klaar voor de volgende handelsdag.")
+print(f"Nieuw productie-model opgeslagen. Thresholds: L={t_l:.6f}, S={t_s:.6f}")
