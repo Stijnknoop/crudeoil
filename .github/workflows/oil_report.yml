@@ -5,11 +5,10 @@ concurrency:
   cancel-in-progress: false
 
 on:
-  workflow_run:
-    workflows: ["Run Python script twice per day"]
-    types:
-      - completed
-  workflow_dispatch:
+  schedule:
+    # Dit runt elke dag om 23:45 UTC (00:45 NL wintertijd)
+    - cron: '45 23 * * *'
+  workflow_dispatch: # Behoud handmatige start optie
 
 permissions:
   contents: write
@@ -17,12 +16,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
-    if: >
-      github.event.workflow_run.conclusion == 'success' && 
-      (github.event_name == 'workflow_dispatch' || 
-       github.event.workflow_run.event == 'workflow_dispatch' || 
-       format('{0}', github.event.workflow_run.updated_at) > format('{0}', '15:00'))
+    # De complexe 'if' conditie is verwijderd
 
     steps:
       - name: Checkout repository
@@ -54,6 +48,7 @@ jobs:
         run: |
           git config --global user.name 'Oil Trading Bot'
           git config --global user.email 'bot@trading.com'
+          git checkout master
           git add Trading_details/
           git commit -m "Update logs en plots: $(date +'%Y-%m-%d') [skip ci]" || echo "Geen wijzigingen"
           git pull origin master --rebase
