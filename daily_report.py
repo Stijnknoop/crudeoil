@@ -29,11 +29,11 @@ def read_latest_csv_from_crudeoil():
 
 print("--- START ANALYSE ---")
 df_raw = read_latest_csv_from_crudeoil()
-df_raw['time'] = pd.to_datetime(df_raw['time'])
+df_raw['time'] = pd.to_datetime(df_raw['time'], format='ISO8601')
 df_raw = df_raw.sort_values('time')
 
-# Data groeperen in dagen
-full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='1T')
+# Data groeperen in dagen - FIX: 'min' i.p.v. 'T'
+full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='min')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
 df = df.set_index('time')
@@ -59,7 +59,7 @@ dag_dict = {f'dag_{i}': d[d['has_data']].reset_index(drop=True)
             for i, (day, d) in enumerate(df.groupby('trading_day'), start=1)}
 
 # ==============================================================================
-# 2. FEATURE ENGINEERING & HELPERS (STRICTE KOPIE LOGICA)
+# 2. FEATURE ENGINEERING & HELPERS
 # ==============================================================================
 def add_features(df_in):
     df = df_in.copy().sort_values('time')
@@ -118,9 +118,11 @@ sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).gro
 
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
-    # Filter: Verwijder Pending EN vandaag om ze opnieuw te berekenen
+    # FIX: Robuuste conversie naar datetime bij inladen
+    existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'], format='ISO8601', errors='coerce')
+    
     mask = (existing_logs['exit_reason'] != "Data End (Pending)") & \
-           (~existing_logs['entry_time'].astype(str).str.contains(today_str, na=False))
+           (~existing_logs['entry_time'].dt.strftime('%Y-%m-%d').fillna('').str.contains(today_str))
     
     existing_logs = existing_logs[mask].copy()
     processed_days = set(existing_logs['day'].astype(str).tolist())
@@ -141,7 +143,6 @@ else:
         history_keys = sorted_keys[history_start:idx]
         
         if len(history_keys) < 20:
-            # Voor dagen zonder genoeg historie maken we een leeg record voor de tijdlijn
             df_temp = dag_dict[current_key]
             new_records.append({
                 "day": current_key, "return": 0, "exit_reason": "No Trade (Init)",
@@ -149,11 +150,8 @@ else:
             })
             continue
             
-        split_point = int(len(history_keys) * 0.75)
-        train_keys, val_keys = history_keys[:split_point], history_keys[split_point:]
-        
-        X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
-        X_val, yl_val, ys_val = get_xy(val_keys, dag_dict)
+        X_tr, yl_tr, ys_tr = get_xy(history_keys[:int(len(history_keys)*0.75)], dag_dict)
+        X_val, yl_val, ys_val = get_xy(history_keys[int(len(history_keys)*0.75):], dag_dict)
         if X_tr is None: continue
 
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
@@ -169,7 +167,6 @@ else:
         t_l = np.percentile(m_l.predict(X_tr), pct_l)
         t_s = np.percentile(m_s.predict(X_tr), pct_s)
         
-        # Dag simulatie
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
         if df_day.empty: continue
         
@@ -205,9 +202,9 @@ else:
                     
         new_records.append(day_res)
 
-    # Samenvoegen en Chronologisch sorteren
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
-    final_df['entry_time'] = pd.to_datetime(final_df['entry_time'])
+    # Laatste robuuste conversie voor sorteren
+    final_df['entry_time'] = pd.to_datetime(final_df['entry_time'], format='ISO8601', errors='coerce')
     final_df = final_df.sort_values('entry_time', ascending=True)
     
     final_df.to_csv(log_path, index=False)
