@@ -33,32 +33,31 @@ def generate_performance_plots():
         return
 
     df_logs = pd.read_csv(log_path)
-    # Filter trades voor de equity curve
-    df_trades = df_logs[~df_logs['exit_reason'].isin(['No Trade', 'Data End (Pending)'])].copy()
     
     # Zorg dat de tijdstippen echte datetime objecten zijn
     df_logs['entry_time'] = pd.to_datetime(df_logs['entry_time'])
-    df_trades['entry_time'] = pd.to_datetime(df_trades['entry_time'])
-    df_trades = df_trades.sort_values('entry_time')
+    
+    # Filter trades voor de equity curve (alleen gesloten trades)
+    df_trades_finished = df_logs[~df_logs['exit_reason'].isin(['No Trade', 'Data End (Pending)', 'No Trade (Init)'])].copy()
+    df_trades_finished = df_trades_finished.sort_values('entry_time')
 
     raw_data = fetch_raw_data()
     if raw_data is not None:
         raw_data['time'] = pd.to_datetime(raw_data['time'])
         raw_data = raw_data.sort_values('time')
 
-    # --- 1. EQUITY CURVE VS BUY & HOLD ---
-    if not df_trades.empty:
+    # --- 1. EQUITY CURVE ---
+    if not df_trades_finished.empty:
         leverage = 5
-        returns = df_trades['return'].values * leverage
+        returns = df_trades_finished['return'].values * leverage
         equity_curve = [1.0]
         for r in returns:
             equity_curve.append(equity_curve[-1] * (1 + r))
         
-        start_time = df_trades['entry_time'].min() - pd.Timedelta(hours=1)
-        plot_times = [start_time] + df_trades['entry_time'].tolist()
+        start_time = df_trades_finished['entry_time'].min() - pd.Timedelta(hours=1)
+        plot_times = [start_time] + df_trades_finished['entry_time'].tolist()
 
         fig, ax1 = plt.subplots(figsize=(12, 7))
-
         if raw_data is not None:
             mask = raw_data['time'] >= start_time
             df_bh = raw_data.loc[mask].copy()
@@ -71,7 +70,6 @@ def generate_performance_plots():
         ax1.fill_between(plot_times, 1, equity_curve, color='green', alpha=0.1)
         ax1.set_title(f"Performance Overzicht\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
         ax1.set_ylabel("Factor (Start = 1.0)")
-        ax1.set_xlim(left=start_time)
         ax1.grid(True, linestyle='--', alpha=0.3)
         ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
         ax1.legend(loc='upper left')
@@ -85,7 +83,6 @@ def generate_performance_plots():
         yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         refresh_dates = [today_str, yesterday_str]
 
-        # Loop nu door alle unieke datums in de koersdata
         all_trading_days = raw_data['time'].dt.date.unique()
 
         for trade_date_dt in all_trading_days:
@@ -93,36 +90,44 @@ def generate_performance_plots():
             file_name = f"{trade_date_str}.png"
             file_path = os.path.join(plot_dir, file_name)
             
-            # Alleen plotten als het nieuw is, of vandaag/gisteren (voor live updates)
             if os.path.exists(file_path) and (trade_date_str not in refresh_dates):
                 continue
             
             day_data = raw_data[raw_data['time'].dt.date == trade_date_dt].copy()
+            if day_data.empty: continue
+
+            plt.figure(figsize=(10, 5))
+            plt.plot(day_data['time'], day_data['close_bid'], color='blue', alpha=0.4, label='Prijs')
             
-            if not day_data.empty:
-                plt.figure(figsize=(10, 5))
-                plt.plot(day_data['time'], day_data['close_bid'], color='blue', alpha=0.4, label='Prijs')
+            # Zoek de log entry voor deze dag
+            day_log = df_logs[df_logs['entry_time'].dt.date == trade_date_dt]
+            
+            title_suffix = "No Trade"
+            if not day_log.empty:
+                row = day_log.iloc[0]
                 
-                # Check of er een trade was op deze dag in df_logs
-                day_trade = df_logs[df_logs['entry_time'].dt.date == trade_date_dt]
-                
-                title_suffix = "No Trade"
-                if not day_trade.empty and day_trade['exit_reason'].iloc[0] not in ['No Trade', 'Data End (Pending)']:
-                    trade = day_trade.iloc[0]
-                    plt.scatter(trade['entry_time'], trade['entry_p'], color='green', marker='^', s=100, label="Entry", zorder=5)
-                    if not pd.isna(trade['exit_time']):
-                        exit_t = pd.to_datetime(trade['exit_time'])
-                        plt.scatter(exit_t, trade['exit_p'], color='red', marker='v', s=100, label="Exit", zorder=5)
-                    title_suffix = f"Return: {trade['return']:.2%}"
-                
-                plt.title(f"Handelsdag: {trade_date_str} | {title_suffix}")
-                plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-                plt.grid(True, alpha=0.2)
-                plt.legend()
-                
-                plt.savefig(file_path, bbox_inches='tight')
-                plt.close()
-                print(f"Plot aangemaakt/ververst: {file_name}")
+                # Check of er een Entry is (ongeacht of hij pending is)
+                # We kijken of entry_p een geldig getal is
+                if not pd.isna(row.get('entry_p')):
+                    plt.scatter(row['entry_time'], row['entry_p'], color='green', marker='^', s=150, label="Entry", zorder=5)
+                    
+                    if row['exit_reason'] == "Data End (Pending)":
+                        title_suffix = "LIVE / PENDING"
+                    else:
+                        title_suffix = f"Return: {row['return']:.2%}"
+                        # Teken Exit alleen als die er is
+                        if not pd.isna(row.get('exit_time')):
+                            exit_t = pd.to_datetime(row['exit_time'])
+                            plt.scatter(exit_t, row['exit_p'], color='red', marker='v', s=150, label="Exit", zorder=5)
+
+            plt.title(f"Handelsdag: {trade_date_str} | {title_suffix}")
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            plt.grid(True, alpha=0.2)
+            plt.legend()
+            
+            plt.savefig(file_path, bbox_inches='tight')
+            plt.close()
+            print(f"Plot aangemaakt/ververst: {file_name}")
 
 if __name__ == "__main__":
     generate_performance_plots()
