@@ -4,13 +4,14 @@ import numpy as np
 import os
 import re
 from sklearn.ensemble import RandomForestRegressor
-from scipy.stats import spearmanr # Toegevoegd voor validatie score
+from scipy.stats import spearmanr
+from datetime import datetime
 
 import matplotlib
 matplotlib.use('Agg')
 
 # ==============================================================================
-# 1. DATA OPHALEN (ONGECWIJZIGD)
+# 1. DATA OPHALEN
 # ==============================================================================
 def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
@@ -30,7 +31,6 @@ df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'])
 df_raw = df_raw.sort_values('time')
 
-# Data groeperen in dagen
 full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='1T')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
@@ -57,7 +57,7 @@ dag_dict = {f'dag_{i}': d[d['has_data']].reset_index(drop=True)
             for i, (day, d) in enumerate(df.groupby('trading_day'), start=1)}
 
 # ==============================================================================
-# 2. FEATURE ENGINEERING (ONGECWIJZIGD)
+# 2. FEATURE ENGINEERING & HELPERS
 # ==============================================================================
 def add_features(df_in):
     df = df_in.copy().sort_values('time')
@@ -94,110 +94,81 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
+def calculate_dynamic_threshold(correlation_score):
+    if np.isnan(correlation_score) or correlation_score < 0.01:
+        return 99.9
+    elif correlation_score < 0.05:
+        return 98.0
+    elif correlation_score < 0.10:
+        return 96.0
+    else:
+        return 94.0
+
 # ==============================================================================
-# 3. LOGICA VOOR BEVRIEZEN EN ANALYSE (AANGEPAST MET DYNAMISCHE THRESHOLD)
+# 3. OPSCHONEN EN SELECTIE (FIX VOOR UPDATES)
 # ==============================================================================
 output_dir = "Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
+os.makedirs(output_dir, exist_ok=True)
 
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
+today_str = datetime.now().strftime('%Y-%m-%d')
+sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 
 if os.path.exists(log_path):
-    print(f"Log gevonden. Opschonen van pending entries...")
     existing_logs = pd.read_csv(log_path)
-    existing_logs = existing_logs[existing_logs['exit_reason'] != "Data End (Pending)"].copy()
+    # VERWIJDER: 1. Alle pending trades, 2. De data van vandaag (moet altijd vers zijn)
+    # Zo dwingen we het script om deze opnieuw te simuleren
+    mask = (existing_logs['exit_reason'] != "Data End (Pending)") & \
+           (~existing_logs['entry_time'].astype(str).str.contains(today_str))
+    
+    existing_logs = existing_logs[mask].copy()
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
-    print("Geen log gevonden. Nieuwe geschiedenis opbouwen.")
     existing_logs, processed_days = pd.DataFrame(), set()
 
-sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
+# Nieuwe dagen zijn dagen die niet in de log staan OF de dag van vandaag
 new_days = [k for k in sorted_keys if k not in processed_days]
 
-# HULPFUNCTIE: Bepaal threshold percentiel op basis van validatie score
-def calculate_dynamic_threshold(correlation_score):
-    """
-    Zet correlatie om naar een percentiel threshold.
-    Lage correlatie = Hoge threshold (conservatief/geen trades).
-    Hoge correlatie = Lagere threshold (agressiever).
-    """
-    if np.isnan(correlation_score) or correlation_score < 0.01:
-        return 99.9  # Model snapt er niks van -> Bevries trading (praktisch gezien)
-    elif correlation_score < 0.05:
-        return 98.0  # Zwak model -> Zeer conservatief
-    elif correlation_score < 0.10:
-        return 96.0  # Matig model -> Conservatief
-    else:
-        return 94.0  # Goed model -> Normaal/Agressief
-
 if not new_days:
-    print("Geen nieuwe dagen om te verwerken.")
+    print("Geen nieuwe data om te verwerken.")
 else:
-    print(f"Nieuwe dagen voor analyse: {new_days}")
+    print(f"Verwerken: {new_days}")
     new_records = []
     
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
-        
-        # Bepaal historie (max 40 dagen)
         history_start = max(0, idx - 40)
         history_keys = sorted_keys[history_start:idx]
-        total_len = len(history_keys)
         
-        if total_len < 20:
-            print(f"Overslaan: {current_key} (Historie {total_len} < 20 dagen)")
+        if len(history_keys) < 20:
+            print(f"Overslaan: {current_key} (Te weinig historie)")
             continue
             
-        # Split: 75% train / 25% val
-        split_point = int(total_len * 0.75)
-        train_keys = history_keys[:split_point]
-        val_keys = history_keys[split_point:]
+        split_point = int(len(history_keys) * 0.75)
+        train_keys, val_keys = history_keys[:split_point], history_keys[split_point:]
         
-        # Train Data ophalen
         X_tr, yl_tr, ys_tr = get_xy(train_keys, dag_dict)
+        X_val, yl_val, ys_val = get_xy(val_keys, dag_dict)
         if X_tr is None: continue
 
-        # Validatie Data ophalen (BELANGRIJK VOOR TUNING)
-        X_val, yl_val, ys_val = get_xy(val_keys, dag_dict)
-            
-        # Modellen trainen
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
         
-        # --- DYNAMISCHE THRESHOLD LOGICA ---
-        # 1. Voorspel op validatieset
+        # Threshold bepalen
         if X_val is not None and len(X_val) > 10:
-            pred_val_l = m_l.predict(X_val)
-            pred_val_s = m_s.predict(X_val)
-            
-            # 2. Bereken Spearman Correlatie (Ranking kwaliteit)
-            # We gebruiken spearmanr omdat we willen weten of hogere predictions ook echt hogere returns geven
-            corr_l, _ = spearmanr(pred_val_l, yl_val)
-            corr_s, _ = spearmanr(pred_val_s, ys_val)
-            
-            # 3. Bepaal threshold percentiel
-            pct_l = calculate_dynamic_threshold(corr_l)
-            pct_s = calculate_dynamic_threshold(corr_s)
-            
-            # Console feedback voor debugging (laat zien hoe het model presteert)
-            print(f"{current_key} | Val Corr Long: {corr_l:.3f} (Pct: {pct_l}) | Val Corr Short: {corr_s:.3f} (Pct: {pct_s})")
+            corr_l, _ = spearmanr(m_l.predict(X_val), yl_val)
+            corr_s, _ = spearmanr(m_s.predict(X_val), ys_val)
+            pct_l, pct_s = calculate_dynamic_threshold(corr_l), calculate_dynamic_threshold(corr_s)
         else:
-            # Fallback als er geen validatie data is
             pct_l, pct_s = 96.0, 96.0
-            print(f"{current_key} | Geen validatie data, fallback naar Pct: 96.0")
 
-        # 4. Bereken de harde waarde van de threshold op basis van de TRAINING distributie
-        # We gebruiken de training distributie omdat die stabieler is voor de waarden,
-        # maar we kiezen HOE streng we zijn (het percentiel) op basis van de validatie score.
-        pred_tr_l = m_l.predict(X_tr)
-        pred_tr_s = m_s.predict(X_tr)
+        t_l = np.percentile(m_l.predict(X_tr), pct_l)
+        t_s = np.percentile(m_s.predict(X_tr), pct_s)
         
-        t_l = np.percentile(pred_tr_l, pct_l)
-        t_s = np.percentile(pred_tr_s, pct_s)
-        
-        # --- DAG SIMULATIE (vrijwel ongewijzigd, gebruikt nu dynamische t_l en t_s) ---
+        # Dag simulatie
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
+        if df_day.empty: continue
+        
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
         bids, asks, times, hours = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values, df_day['hour'].values
         
@@ -216,7 +187,6 @@ else:
                         curr_sl = -0.004
             else:
                 r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
-                # Trailing stop logic
                 if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
                 
                 is_data_end = (j == len(bids)-2)
@@ -232,5 +202,6 @@ else:
         new_records.append(day_res)
 
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
+    final_df = final_df.sort_values('entry_time', ascending=True)
     final_df.to_csv(log_path, index=False)
-    print(f"--- VOLTOOID --- CSV bijgewerkt. Totaal trades in log: {len(final_df)}")
+    print(f"--- VOLTOOID --- Log bijgewerkt. Totaal: {len(final_df)}")
