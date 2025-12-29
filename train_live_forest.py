@@ -93,7 +93,7 @@ df['date'] = df['time'].dt.date
 # Filter vandaag eruit
 today_date = datetime.now().date()
 print(f"Huidige datum: {today_date}. Data van vandaag wordt uitgesloten.")
-df = df[df['date'] < today_date].copy()
+df = df[df['date'] <= today_date].copy()
 
 valid_dates = df.groupby('date')['has_data'].any()
 valid_dates = valid_dates[valid_dates].index
