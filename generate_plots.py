@@ -32,32 +32,38 @@ def generate_performance_plots():
     if not os.path.exists(log_path):
         return
 
+    # Inladen met robuuste datum-fix
     df_logs = pd.read_csv(log_path)
+    df_logs['entry_time'] = pd.to_datetime(df_logs['entry_time'], format='ISO8601', errors='coerce')
     
-    # Zorg dat de tijdstippen echte datetime objecten zijn
-    df_logs['entry_time'] = pd.to_datetime(df_logs['entry_time'])
+    # --- FIX: OOK PENDING TRADES MEENEMEN ---
+    # We filteren nu alleen de "echte" No Trades (waar return 0 is en geen entry_p bestaat)
+    df_trades_all = df_logs[
+        (~df_logs['exit_reason'].isin(['No Trade', 'No Trade (Init)', 'No Trade (Data Error)'])) & 
+        (df_logs['entry_p'].notna())
+    ].copy()
     
-    # Filter trades voor de equity curve (alleen gesloten trades)
-    df_trades_finished = df_logs[~df_logs['exit_reason'].isin(['No Trade', 'Data End (Pending)', 'No Trade (Init)'])].copy()
-    df_trades_finished = df_trades_finished.sort_values('entry_time')
+    df_trades_all = df_trades_all.sort_values('entry_time')
 
     raw_data = fetch_raw_data()
     if raw_data is not None:
-        raw_data['time'] = pd.to_datetime(raw_data['time'])
+        raw_data['time'] = pd.to_datetime(raw_data['time'], format='ISO8601', errors='coerce')
         raw_data = raw_data.sort_values('time')
 
-    # --- 1. EQUITY CURVE ---
-    if not df_trades_finished.empty:
+    # --- 1. EQUITY CURVE (INCLUSIEF PENDING) ---
+    if not df_trades_all.empty:
         leverage = 5
-        returns = df_trades_finished['return'].values * leverage
+        # Gebruik de actuele return, ook als die van een pending trade is
+        returns = df_trades_all['return'].values * leverage
         equity_curve = [1.0]
         for r in returns:
             equity_curve.append(equity_curve[-1] * (1 + r))
         
-        start_time = df_trades_finished['entry_time'].min() - pd.Timedelta(hours=1)
-        plot_times = [start_time] + df_trades_finished['entry_time'].tolist()
+        start_time = df_trades_all['entry_time'].min() - pd.Timedelta(hours=1)
+        plot_times = [start_time] + df_trades_all['entry_time'].tolist()
 
         fig, ax1 = plt.subplots(figsize=(12, 7))
+        
         if raw_data is not None:
             mask = raw_data['time'] >= start_time
             df_bh = raw_data.loc[mask].copy()
@@ -68,7 +74,13 @@ def generate_performance_plots():
 
         ax1.plot(plot_times, equity_curve, color='darkgreen', linewidth=2.5, label=f'Bot Strategy ({leverage}x)')
         ax1.fill_between(plot_times, 1, equity_curve, color='green', alpha=0.1)
-        ax1.set_title(f"Performance Overzicht\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
+        
+        # Voeg een indicatie toe als de laatste trade nog pending is
+        title_text = f"Performance Overzicht\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}"
+        if df_trades_all['exit_reason'].iloc[-1] == "Data End (Pending)":
+            title_text += " (Laatste trade is LIVE)"
+            
+        ax1.set_title(title_text)
         ax1.set_ylabel("Factor (Start = 1.0)")
         ax1.grid(True, linestyle='--', alpha=0.3)
         ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
@@ -99,25 +111,20 @@ def generate_performance_plots():
             plt.figure(figsize=(10, 5))
             plt.plot(day_data['time'], day_data['close_bid'], color='blue', alpha=0.4, label='Prijs')
             
-            # Zoek de log entry voor deze dag
             day_log = df_logs[df_logs['entry_time'].dt.date == trade_date_dt]
             
             title_suffix = "No Trade"
             if not day_log.empty:
                 row = day_log.iloc[0]
-                
-                # Check of er een Entry is (ongeacht of hij pending is)
-                # We kijken of entry_p een geldig getal is
                 if not pd.isna(row.get('entry_p')):
                     plt.scatter(row['entry_time'], row['entry_p'], color='green', marker='^', s=150, label="Entry", zorder=5)
                     
                     if row['exit_reason'] == "Data End (Pending)":
-                        title_suffix = "LIVE / PENDING"
+                        title_suffix = f"LIVE (Huidige return: {row['return']:.2%})"
                     else:
                         title_suffix = f"Return: {row['return']:.2%}"
-                        # Teken Exit alleen als die er is
                         if not pd.isna(row.get('exit_time')):
-                            exit_t = pd.to_datetime(row['exit_time'])
+                            exit_t = pd.to_datetime(row['exit_time'], format='ISO8601', errors='coerce')
                             plt.scatter(exit_t, row['exit_p'], color='red', marker='v', s=150, label="Exit", zorder=5)
 
             plt.title(f"Handelsdag: {trade_date_str} | {title_suffix}")
