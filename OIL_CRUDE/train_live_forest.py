@@ -14,14 +14,31 @@ from datetime import datetime
 def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
     repo = "crudeoil"
+    folder_path = "OIL_CRUDE"  # ✅ Geef hier de map aan
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
-    api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref=master"
+    
+    # ✅ De API URL bevat nu de folder_path
+    api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{folder_path}?ref=master"
+    
     response = requests.get(api_url, headers=headers)
+    
     if response.status_code != 200:
-        raise Exception(f"GitHub API error: {response.status_code}")
+        raise Exception(f"GitHub API error: {response.status_code}. Bestaat de map '{folder_path}' al in de repo?")
+    
     files = response.json()
-    csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
+    
+    # ✅ Filter op CSV files en sorteer op naam (zodat de nieuwste timestamp bovenaan komt)
+    csv_files = [f for f in files if f['name'].endswith('.csv')]
+    
+    if not csv_files:
+        raise Exception(f"Geen CSV bestanden gevonden in de map {folder_path}")
+    
+    # Sorteren op naam (omgekeerd), nieuwste bestand staat nu op index 0
+    csv_files.sort(key=lambda x: x['name'], reverse=True)
+    csv_file = csv_files[0]
+    
+    print(f"Inladen van: {csv_file['name']} uit de map {folder_path}")
     return pd.read_csv(csv_file['download_url'])
 
 def add_features(df_in):
