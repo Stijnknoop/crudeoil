@@ -28,15 +28,28 @@ def tokens():
 
     conn.request("POST", "/api/v1/session", payload, headers)
     res = conn.getresponse()
+    
     CST = res.getheader("CST")
     SECURITY_TOKEN = res.getheader("X-SECURITY-TOKEN")
+    
+    # FIX: Verbinding sluiten na de respons om 'Request-sent' fouten te voorkomen
+    conn.close() 
     return SECURITY_TOKEN, CST
 
 def data_nu():
     global SECURITY_TOKEN, CST
+    creds = load_credentials()
+    api_key = creds['api_key']
+    
     conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
     payload = ''
-    headers = {'X-SECURITY-TOKEN': SECURITY_TOKEN, 'CST': CST}
+    # FIX: Voeg X-CAP-API-KEY ook hier toe aan de headers
+    headers = {
+        'X-SECURITY-TOKEN': SECURITY_TOKEN, 
+        'CST': CST,
+        'X-CAP-API-KEY': api_key
+    }
+    
     epic = "OIL_CRUDE"
     resolution = "MINUTE"
     max_candles = 1000
@@ -44,7 +57,13 @@ def data_nu():
 
     conn.request("GET", url, payload, headers)
     res = conn.getresponse()
-    ohlc = json.loads(res.read().decode("utf-8"))
+    
+    raw_data = res.read().decode("utf-8")
+    ohlc = json.loads(raw_data)
+    
+    # FIX: Altijd de verbinding sluiten
+    conn.close()
+    
     prices = ohlc.get('prices', [])
 
     df = pd.json_normalize(prices)
