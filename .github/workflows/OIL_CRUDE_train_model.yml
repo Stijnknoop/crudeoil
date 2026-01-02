@@ -41,7 +41,7 @@ jobs:
       - name: Train Live Model
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python train_live_forest.py
+        run: python train_live_forest_crude_oil.py
 
       # ✅ 3. Specifiek de OIL_CRUDE map pushen
       - name: Push Model naar Repo
