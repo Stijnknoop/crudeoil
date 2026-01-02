@@ -52,7 +52,7 @@ jobs:
           git checkout master
           
           # Alleen de nieuwe model-map in de asset-folder toevoegen
-          git add OIL_CRUDE/Model/
+          git add OIL_CRUDE/model/
           
           git commit -m "Update OIL_CRUDE Model: $(date +'%Y-%m-%d') [skip ci]" || echo "Geen wijzigingen"
           
