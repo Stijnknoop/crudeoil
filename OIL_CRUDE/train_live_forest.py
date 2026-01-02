@@ -132,7 +132,7 @@ t_s = np.percentile(m_s.predict(X_tr), pct_s)
 
 # --- HIER KOMT DE AANPASSING ---
 # 1. Definieer de map
-model_map = "OIL_CRUDE/Model"
+model_map = "OIL_CRUDE/model"
 
 # 2. Maak de map aan (nu gebruik je de variabele)
 os.makedirs(model_map, exist_ok=True)
