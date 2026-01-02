@@ -12,10 +12,11 @@ on:
 jobs:
   update-data:
     runs-on: ubuntu-latest
+    
     strategy:
-      # Hier definieer je je assets!
+      max-parallel: 1  # Voert de assets één voor één uit in plaats van tegelijk
       matrix:
-        asset: [OIL_CRUDE, NATURALGAS, GOLD] 
+        asset: [OIL_CRUDE, NATURALGAS, GOLD]
       # Als 1 faalt, moeten de anderen wel doorgaan
       fail-fast: false
 
@@ -44,11 +45,36 @@ jobs:
         run: python merge_data.py --epic ${{ matrix.asset }}
 
       # Stap 3: Commit & Push (alleen als er iets gewijzigd is)
+    #  - name: Push changes
+    #    run: |
+    #      git config --global user.name "github-actions"
+    #      git config --global user.email "actions@github.com"
+    #      git add -A
+    #      # Alleen committen als er daadwerkelijk iets te committen valt
+    #      git diff-index --quiet HEAD || git commit -m "Update data for ${{ matrix.asset }}"
+    #      git push
+
+
+
+     # Stap 3: Commit & Push (verbeterd voor matrix)
       - name: Push changes
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
+          
+          # Voeg alles toe
           git add -A
-          # Alleen committen als er daadwerkelijk iets te committen valt
-          git diff-index --quiet HEAD || git commit -m "Update data for ${{ matrix.asset }}"
-          git push
+          
+          # Alleen doorgaan als er echt wijzigingen zijn
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "Update data voor ${{ matrix.asset }}"
+            
+            # Haal de laatste versie op en zet jouw commit erachteraan (rebase)
+            # Dit voorkomt de 'rejected' fout bij matrix jobs
+            git pull --rebase origin master
+            
+            # Push de gecombineerde geschiedenis
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          else
+            echo "Geen wijzigingen om te committen voor ${{ matrix.asset }}"
+          fi     
