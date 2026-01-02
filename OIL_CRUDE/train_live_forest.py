@@ -129,11 +129,25 @@ t_l = np.percentile(m_l.predict(X_tr), pct_l)
 t_s = np.percentile(m_s.predict(X_tr), pct_s)
 
 # Opslaan voor Live Trader
-os.makedirs("Model", exist_ok=True)
+
+# --- HIER KOMT DE AANPASSING ---
+# 1. Definieer de map
+model_map = "OIL_CRUDE/Model"
+
+# 2. Maak de map aan (nu gebruik je de variabele)
+os.makedirs(model_map, exist_ok=True)
+
+# 3. Definieer het volledige pad naar het bestand
+model_file_path = os.path.join(model_map, "live_trading_model.pkl")
+
+# 4. Opslaan voor Live Trader (gebruik het nieuwe pad)
 joblib.dump({
-    "model_l": m_l, "model_s": m_s, "t_l": t_l, "t_s": t_s,
+    "model_l": m_l, 
+    "model_s": m_s, 
+    "t_l": t_l, 
+    "t_s": t_s,
     "f_selected": ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour'],
     "trained_on_until": history_keys[-1]
-}, "Model/live_trading_model.pkl")
+}, model_file_path)
 
-print(f"Model succesvol opgeslagen. T_L: {t_l:.6f}, T_S: {t_s:.6f}")
+print(f"Model succesvol opgeslagen in {model_file_path}. T_L: {t_l:.6f}, T_S: {t_s:.6f}")
