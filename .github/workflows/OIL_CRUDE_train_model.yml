@@ -35,7 +35,7 @@ jobs:
 
       # ✅ 1. Map aanmaken binnen OIL_CRUDE (voor de zekerheid, al doet Python dit ook)
       - name: Create Model directory
-        run: mkdir -p OIL_CRUDE/Model
+        run: mkdir -p OIL_CRUDE/model
 
       # ✅ 2. Script draaien (zorg dat train_live_forest.py in de root staat of pas het pad aan)
       - name: Train Live Model
