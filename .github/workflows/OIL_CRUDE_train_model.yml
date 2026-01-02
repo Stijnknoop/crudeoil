@@ -1,4 +1,4 @@
-name: Train and Store Model
+name: Train and Store Model: OIL_CRUDE
 
 concurrency:
   group: crude-oil-chain
