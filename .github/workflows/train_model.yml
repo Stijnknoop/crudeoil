@@ -7,7 +7,7 @@ concurrency:
 on:
   schedule:
     # Dit runt elke dag om 22:30 UTC (23:30 NL wintertijd)
-    - cron: '30 22 * * *'
+    #- cron: '30 22 * * *'
   workflow_dispatch: # Hiermee kun je hem nog steeds handmatig starten
 
 permissions:
