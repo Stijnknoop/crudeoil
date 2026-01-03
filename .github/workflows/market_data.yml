@@ -1,4 +1,4 @@
-name: Update Market Data
+name: Update Market Data ALL_EPICS
 
 permissions:
   contents: write
