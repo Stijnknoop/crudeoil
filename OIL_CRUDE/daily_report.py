@@ -17,6 +17,7 @@ matplotlib.use('Agg')
 def read_latest_csv_from_crudeoil():
     user = "Stijnknoop"
     repo = "crudeoil"
+    folder_path = "OIL_CRUDE"
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
     api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref=master"
