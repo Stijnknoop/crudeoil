@@ -1,0 +1,55 @@
+name: Oil Trading Daily Report
+
+concurrency:
+  group: crude-oil-chain
+  cancel-in-progress: false
+
+on:
+  schedule:
+    # Dit runt elke dag om 23:45 UTC (00:45 NL wintertijd)
+    - cron: '45 23 * * *'
+  workflow_dispatch: # Behoud handmatige start optie
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # De complexe 'if' conditie is verwijderd
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Installeer afhankelijkheden
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary requests pandas numpy matplotlib scikit-learn scipy joblib
+
+      - name: Draai rapportage script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python OIL_CRUDE/daily_report.py
+
+      - name: Genereer Trade Plots
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python OIL_CRUDE/generate_plots.py
+
+      - name: Push Resultaten naar Repo
+        run: |
+          git config --global user.name 'Oil Trading Bot'
+          git config --global user.email 'bot@trading.com'
+          git checkout master
+          git add OIL_CRUDE/Trading_details/
+          git commit -m "Update logs en plots: $(date +'%Y-%m-%d') [skip ci]" || echo "Geen wijzigingen"
+          git pull origin master --rebase
+          git push origin master
