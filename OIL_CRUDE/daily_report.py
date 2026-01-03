@@ -20,7 +20,10 @@ def read_latest_csv_from_crudeoil():
     folder_path = "OIL_CRUDE"
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
-    api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref=master"
+
+    # ✅ De API URL bevat nu de folder_path
+    api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{folder_path}?ref=master"
+    
     response = requests.get(api_url, headers=headers)
     if response.status_code != 200:
         raise Exception(f"GitHub API error: {response.status_code}")
