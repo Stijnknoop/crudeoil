@@ -6,9 +6,8 @@ concurrency:
 
 on:
   schedule:
-    # Elke dag om 22:02 UTC (23:02 NL tijd)
-    - cron: '15 10 * * *'
-    - cron: '02 22 * * *'
+    # Dit runt elke dag om 22:30 UTC (23:30 NL wintertijd)
+    - cron: '30 22 * * *'
     
   workflow_dispatch:
 
