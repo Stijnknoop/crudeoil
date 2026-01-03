@@ -1,4 +1,4 @@
-name: Oil Trading Daily Report
+name: Daily Report OIL_CRUDE
 
 concurrency:
   group: crude-oil-chain
