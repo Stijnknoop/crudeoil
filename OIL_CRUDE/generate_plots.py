@@ -7,10 +7,16 @@ import datetime
 
 # 1. DATA OPHALEN
 def fetch_raw_data():
-    user, repo = "Stijnknoop", "crudeoil"
+    user = "Stijnknoop"
+    repo = "crudeoil"
+    folder_path = "OIL_CRUDE"  # ✅ Geef hier de map aan
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
-    api_url = f"https://api.github.com/repos/{user}/{repo}/contents?ref=master"
+    
+    # ✅ De API URL bevat nu de folder_path
+    api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{folder_path}?ref=master"
+
+    
     try:
         res = requests.get(api_url, headers=headers)
         if res.status_code == 200:
@@ -22,7 +28,7 @@ def fetch_raw_data():
     return None
 
 def generate_performance_plots():
-    log_dir = "Trading_details"
+    log_dir = "OIL_CRUDE/Trading_details"
     plot_dir = os.path.join(log_dir, "plots")
     log_path = os.path.join(log_dir, "trading_logs.csv")
     
