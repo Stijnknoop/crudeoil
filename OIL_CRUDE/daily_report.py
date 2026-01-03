@@ -113,7 +113,7 @@ def calculate_dynamic_threshold(correlation_score):
 # ==============================================================================
 # 3. OPSCHONEN, ANALYSE EN CHRONOLOGISCHE OPSLAG
 # ==============================================================================
-output_dir = "Trading_details"
+output_dir = "OIL_CRUDE/Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
 os.makedirs(output_dir, exist_ok=True)
 
