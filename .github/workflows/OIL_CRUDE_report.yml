@@ -9,6 +9,11 @@ on:
     # Dit runt elke dag om 02:30 UTC (03:30 NL wintertijd)
     - cron: '30 02 * * *'
   workflow_dispatch: # Behoud handmatige start optie
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'OIL_CRUDE/Trading_details/**' # Voorkomt dat de bot zichzelf triggert
 
 permissions:
   contents: write
@@ -16,7 +21,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # De complexe 'if' conditie is verwijderd
 
     steps:
       - name: Checkout repository
@@ -50,6 +54,7 @@ jobs:
           git config --global user.email 'bot@trading.com'
           git checkout master
           git add OIL_CRUDE/Trading_details/
+          # We behouden [skip ci] voor de zekerheid, maar paths-ignore is je extra vangnet
           git commit -m "Update logs en plots: $(date +'%Y-%m-%d') [skip ci]" || echo "Geen wijzigingen"
           git pull origin master --rebase
           git push origin master
