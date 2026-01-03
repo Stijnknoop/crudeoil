@@ -58,7 +58,7 @@ def generate_performance_plots():
 
     # --- 1. EQUITY CURVE (INCLUSIEF PENDING) ---
     if not df_trades_all.empty:
-        leverage = 5
+        leverage = 10
         # Gebruik de actuele return, ook als die van een pending trade is
         returns = df_trades_all['return'].values * leverage
         equity_curve = [1.0]
@@ -82,7 +82,7 @@ def generate_performance_plots():
         ax1.fill_between(plot_times, 1, equity_curve, color='green', alpha=0.1)
         
         # Voeg een indicatie toe als de laatste trade nog pending is
-        title_text = f"Performance Overzicht\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}"
+        title_text = f"Performance Overzicht\nUpdate: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}, leverage: {leverage}x"
         if df_trades_all['exit_reason'].iloc[-1] == "Data End (Pending)":
             title_text += " (Laatste trade is LIVE)"
             
@@ -128,7 +128,7 @@ def generate_performance_plots():
                     if row['exit_reason'] == "Data End (Pending)":
                         title_suffix = f"LIVE (Huidige return: {row['return']:.2%})"
                     else:
-                        title_suffix = f"Return: {row['return']:.2%}"
+                        title_suffix = f"Return: {row['return']:.2%}, geen leverage"
                         if not pd.isna(row.get('exit_time')):
                             exit_t = pd.to_datetime(row['exit_time'], format='ISO8601', errors='coerce')
                             plt.scatter(exit_t, row['exit_p'], color='red', marker='v', s=150, label="Exit", zorder=5)
