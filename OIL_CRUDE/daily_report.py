@@ -82,6 +82,12 @@ def add_features(df_in):
         df = df.merge(df_tf, left_on='tf_key', right_index=True, how='left')
         df[f'{tf}_trend'] = (close - df[f'prev_{tf}_close']) / (df[f'prev_{tf}_close'] + 1e-9)
         df.drop(columns=['tf_key'], inplace=True)
+    
+    # --- NIEUW: Sla de close van de vorige minuut op VOORDAT we shiften ---
+    df['prev_close_bid'] = df['close_bid'].shift(1)
+    df['prev_close_ask'] = df['close_ask'].shift(1)
+    # ----------------------------------------------------------------------
+
     f_cols = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
     df[f_cols] = df[f_cols].shift(1)
     return df.dropna()
@@ -175,7 +181,11 @@ else:
         if df_day.empty: continue
         
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
-        bids, asks, times, hours = df_day['close_bid'].values, df_day['close_ask'].values, df_day['time'].values, df_day['hour'].values
+        
+        # --- AANGEPAST: Haal ook de prev_closes op ---
+        bids, asks = df_day['close_bid'].values, df_day['close_ask'].values
+        prev_bids, prev_asks = df_day['prev_close_bid'].values, df_day['prev_close_ask'].values
+        times, hours = df_day['time'].values, df_day['hour'].values
         
         active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(times[0])}
         
@@ -183,11 +193,13 @@ else:
             if not active:
                 if hours[j] < 23:
                     if p_l[j] > t_l:
-                        ent_p, side, active = asks[j], 1, True
+                        # GEBRUIK PREV_ASKS voor entry prijs (close van vorige minuut)
+                        ent_p, side, active = prev_asks[j], 1, True 
                         day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
                         curr_sl = -0.004
                     elif p_s[j] > t_s:
-                        ent_p, side, active = bids[j], -1, True
+                        # GEBRUIK PREV_BIDS voor entry prijs (close van vorige minuut)
+                        ent_p, side, active = prev_bids[j], -1, True 
                         day_res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
                         curr_sl = -0.004
             else:
