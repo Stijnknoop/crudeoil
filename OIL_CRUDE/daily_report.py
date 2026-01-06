@@ -21,7 +21,6 @@ def read_latest_csv_from_crudeoil():
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
 
-    # ✅ De API URL bevat nu de folder_path
     api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{folder_path}?ref=master"
     
     response = requests.get(api_url, headers=headers)
@@ -36,7 +35,7 @@ df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'], format='ISO8601')
 df_raw = df_raw.sort_values('time')
 
-# Data groeperen in dagen - FIX: 'min' i.p.v. 'T'
+# Data voorbereiding
 full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='min')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
@@ -49,6 +48,7 @@ valid_dates = df.groupby('date')['has_data'].any()
 valid_dates = valid_dates[valid_dates].index
 df = df[df['date'].isin(valid_dates)].copy()
 
+# Gaps detecteren voor handelsdagen
 df['gap_flag'] = (~df['has_data']) & (df['time'].dt.hour >= 20)
 df['gap_group'] = (df['gap_flag'] != df['gap_flag'].shift()).cumsum()
 gap_groups = df[df['gap_flag']].groupby('gap_group').agg(start_time=('time', 'first'), length=('time', 'count'))
@@ -76,6 +76,7 @@ def add_features(df_in):
     df['macd'] = close.ewm(span=12).mean() - close.ewm(span=26).mean()
     delta = close.diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+    
     for tf, freq in [('15min', '15min'), ('1h', '60min')]:
         df_tf = df.set_index('time')['close_bid'].resample(freq).last().shift(1).rename(f'prev_{tf}_close')
         df['tf_key'] = df['time'].dt.floor(freq)
@@ -83,10 +84,8 @@ def add_features(df_in):
         df[f'{tf}_trend'] = (close - df[f'prev_{tf}_close']) / (df[f'prev_{tf}_close'] + 1e-9)
         df.drop(columns=['tf_key'], inplace=True)
     
-    # --- NIEUW: Sla de close van de vorige minuut op VOORDAT we shiften ---
     df['prev_close_bid'] = df['close_bid'].shift(1)
     df['prev_close_ask'] = df['close_ask'].shift(1)
-    # ----------------------------------------------------------------------
 
     f_cols = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
     df[f_cols] = df[f_cols].shift(1)
@@ -121,24 +120,24 @@ def calculate_dynamic_threshold(correlation_score):
 # ==============================================================================
 output_dir = "OIL_CRUDE/Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
+insight_path = os.path.join(output_dir, "model_insights.csv")
 os.makedirs(output_dir, exist_ok=True)
 
 today_str = datetime.now().strftime('%Y-%m-%d')
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 
+# Bestaande logs inladen
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
-    # FIX: Robuuste conversie naar datetime bij inladen
     existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'], format='ISO8601', errors='coerce')
-    
     mask = (existing_logs['exit_reason'] != "Data End (Pending)") & \
            (~existing_logs['entry_time'].dt.strftime('%Y-%m-%d').fillna('').str.contains(today_str))
-    
     existing_logs = existing_logs[mask].copy()
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
     existing_logs, processed_days = pd.DataFrame(), set()
 
+# Nieuwe dagen verwerken
 new_days = [k for k in sorted_keys if k not in processed_days]
 
 if not new_days:
@@ -146,6 +145,7 @@ if not new_days:
 else:
     print(f"Verwerken: {new_days}")
     new_records = []
+    insight_records = []
     
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
@@ -154,35 +154,43 @@ else:
         
         if len(history_keys) < 20:
             df_temp = dag_dict[current_key]
-            new_records.append({
-                "day": current_key, "return": 0, "exit_reason": "No Trade (Init)",
-                "entry_time": str(df_temp['time'].iloc[0])
-            })
+            new_records.append({"day": current_key, "return": 0, "exit_reason": "No Trade (Init)", "entry_time": str(df_temp['time'].iloc[0])})
             continue
             
-        X_tr, yl_tr, ys_tr = get_xy(history_keys[:int(len(history_keys)*0.75)], dag_dict)
-        X_val, yl_val, ys_val = get_xy(history_keys[int(len(history_keys)*0.75):], dag_dict)
-        if X_tr is None: continue
+        # Training & Validatie Splitsing
+        split_idx = int(len(history_keys) * 0.75)
+        X_tr, yl_tr, ys_tr = get_xy(history_keys[:split_idx], dag_dict)
+        X_val, yl_val, ys_val = get_xy(history_keys[split_idx:], dag_dict)
+        
+        if X_tr is None or X_val is None: continue
 
+        # Modellen trainen
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
         m_s = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, ys_tr)
         
-        if X_val is not None and len(X_val) > 10:
-            corr_l, _ = spearmanr(m_l.predict(X_val), yl_val)
-            corr_s, _ = spearmanr(m_s.predict(X_val), ys_val)
-            pct_l, pct_s = calculate_dynamic_threshold(corr_l), calculate_dynamic_threshold(corr_s)
-        else:
-            pct_l, pct_s = 96.0, 96.0
-
+        # Spearman Correlatie berekenen op Validatie set
+        pred_l_val = m_l.predict(X_val)
+        pred_s_val = m_s.predict(X_val)
+        corr_l, _ = spearmanr(pred_l_val, yl_val)
+        corr_s, _ = spearmanr(pred_s_val, ys_val)
+        
+        pct_l, pct_s = calculate_dynamic_threshold(corr_l), calculate_dynamic_threshold(corr_s)
         t_l = np.percentile(m_l.predict(X_tr), pct_l)
         t_s = np.percentile(m_s.predict(X_tr), pct_s)
+
+        # Sla Model Inzichten op
+        insight_records.append({
+            "target_day": current_key,
+            "corr_long": round(corr_l, 4), "corr_short": round(corr_s, 4),
+            "threshold_pct_l": pct_l, "threshold_pct_s": pct_s,
+            "min_pred_l": round(t_l, 6), "min_pred_s": round(t_s, 6)
+        })
         
+        # Handelen op de huidige dag
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
         if df_day.empty: continue
         
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
-        
-        # --- AANGEPAST: Haal ook de prev_closes op ---
         bids, asks = df_day['close_bid'].values, df_day['close_ask'].values
         prev_bids, prev_asks = df_day['prev_close_bid'].values, df_day['prev_close_ask'].values
         times, hours = df_day['time'].values, df_day['hour'].values
@@ -193,12 +201,10 @@ else:
             if not active:
                 if hours[j] < 23:
                     if p_l[j] > t_l:
-                        # GEBRUIK PREV_ASKS voor entry prijs (close van vorige minuut)
                         ent_p, side, active = prev_asks[j], 1, True 
                         day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
                         curr_sl = -0.004
                     elif p_s[j] > t_s:
-                        # GEBRUIK PREV_BIDS voor entry prijs (close van vorige minuut)
                         ent_p, side, active = prev_bids[j], -1, True 
                         day_res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
                         curr_sl = -0.004
@@ -218,10 +224,17 @@ else:
                     
         new_records.append(day_res)
 
+    # Opslaan van logs
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
-    # Laatste robuuste conversie voor sorteren
     final_df['entry_time'] = pd.to_datetime(final_df['entry_time'], format='ISO8601', errors='coerce')
     final_df = final_df.sort_values('entry_time', ascending=True)
-    
     final_df.to_csv(log_path, index=False)
-    print(f"--- VOLTOOID --- Log bijgewerkt. Totaal: {len(final_df)}")
+
+    # Opslaan van inzichten (append als bestand al bestaat)
+    new_insights_df = pd.DataFrame(insight_records)
+    if os.path.exists(insight_path):
+        old_insights = pd.read_csv(insight_path)
+        new_insights_df = pd.concat([old_insights, new_insights_df], ignore_index=True).drop_duplicates(subset=['target_day'])
+    new_insights_df.to_csv(insight_path, index=False)
+
+    print(f"--- VOLTOOID --- Totaal trades: {len(final_df)}. Inzichten bijgewerkt.")
