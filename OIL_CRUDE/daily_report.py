@@ -113,7 +113,7 @@ def calculate_dynamic_threshold(correlation_score):
         return 94.0
 
 # ==============================================================================
-# 3. HANDELSSIMULATIE MET ACTIEVE EXIT
+# 3. HANDELSSIMULATIE MET TRAILING TP EN ACTIEVE EXIT
 # ==============================================================================
 output_dir = "OIL_CRUDE/Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
@@ -134,9 +134,11 @@ else:
 
 new_days = [k for k in sorted_keys if k not in processed_days]
 
-# --- PARAMETERS VOOR ACTIEVE EXIT ---
-SMOOTH_WINDOW = 3               # Minutes to average predictions
-MIN_PROFIT_ACTIVE_EXIT = 0.000  # 0.0 means it can exit early even at a loss
+# --- PARAMETERS ---
+SMOOTH_WINDOW = 3               
+INITIAL_SL = -0.004             # Harde stop op -0.4%
+TRAILING_ACTIVATION = 0.002     # Start met trailen bij +0.2% winst
+TRAILING_DISTANCE = 0.0015      # Houd de stop op 0.15% onder de piek
 
 if not new_days:
     print("Geen nieuwe dagen om te verwerken.")
@@ -180,6 +182,7 @@ else:
         times, hours = df_day['time'].values, df_day['hour'].values
         
         active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(times[0])}
+        peak_r = -999  # Hoogst behaalde rendement tijdens de trade
         
         for j in range(len(bids) - 1):
             if not active:
@@ -187,36 +190,41 @@ else:
                     if p_l[j] > t_l:
                         ent_p, side, active = prev_asks[j], 1, True 
                         day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
-                        curr_sl = -0.004
+                        curr_sl = INITIAL_SL
+                        peak_r = 0
                     elif p_s[j] > t_s:
                         ent_p, side, active = prev_bids[j], -1, True 
                         day_res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
-                        curr_sl = -0.004
+                        curr_sl = INITIAL_SL
+                        peak_r = 0
             else:
                 r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
+                peak_r = max(peak_r, r)
                 
-                # --- SMOOTHING LOGICA ---
+                # --- DYNAMISCHE TRAILING STOP LOGICA ---
+                # Als winst > 0.2%, trek stop omhoog naar (hoogste punt - 0.15%)
+                if peak_r >= TRAILING_ACTIVATION:
+                    curr_sl = max(curr_sl, peak_r - TRAILING_DISTANCE)
+                
+                # --- MODEL SENTIMENT (SMOOTHING) ---
                 avg_p_l = np.mean(p_l[max(0, j-SMOOTH_WINDOW+1) : j+1])
                 avg_p_s = np.mean(p_s[max(0, j-SMOOTH_WINDOW+1) : j+1])
-                
-                # --- TRAILING STOP ---
-                if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
                 
                 should_exit = False
                 reason = ""
                 
-                # --- EXIT CONTROLES ---
+                # 1. Check Trailing Stop / SL
                 if r <= curr_sl:
-                    should_exit, reason = True, "SL/Trailing"
-                elif r >= 0.005:
-                    should_exit, reason = True, "TP (Hard)"
-                elif r >= MIN_PROFIT_ACTIVE_EXIT:
-                    # Actieve exit op basis van model-sentiment
-                    if side == 1 and avg_p_l < -0.0001: # Long trend is echt voorbij
-                        should_exit, reason = True, "Active Exit (Long Fatigue)"
-                    elif side == -1 and avg_p_s < -0.0001: # Short trend is echt voorbij
-                        should_exit, reason = True, "Active Exit (Short Fatigue)"
+                    should_exit, reason = True, "Trailing SL"
                 
+                # 2. Check Model Fatigue (Active Exit)
+                # Alleen als we op winst staan of de trend echt negatief wordt
+                elif side == 1 and avg_p_l < -0.0002:
+                    should_exit, reason = True, "Model Exit (Long Fatigue)"
+                elif side == -1 and avg_p_s < -0.0002:
+                    should_exit, reason = True, "Model Exit (Short Fatigue)"
+                
+                # 3. Tijd/Data checks
                 if hours[j] >= 23:
                     should_exit, reason = True, "EOD (23h)"
                 elif j == len(bids)-2:
@@ -230,7 +238,7 @@ else:
                         "exit_reason": reason
                     })
                     active = False
-                    break # Maximaal 1 trade per dag
+                    break 
                     
         new_records.append(day_res)
 
