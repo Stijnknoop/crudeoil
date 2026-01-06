@@ -102,19 +102,18 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
-# --- AANGEPAST: Lagere drempels voor meer trades ---
 def calculate_dynamic_threshold(correlation_score):
     if np.isnan(correlation_score) or correlation_score < 0.01:
-        return 98.0  # Was 99.9
+        return 99.9
     elif correlation_score < 0.05:
-        return 95.0  # Was 98.0
+        return 98.0
     elif correlation_score < 0.10:
-        return 92.0  # Was 96.0
+        return 96.0
     else:
-        return 88.0  # Was 94.0
+        return 94.0
 
 # ==============================================================================
-# 3. ANALYSE EN MULTI-TRADE LOGICA
+# 3. OPSCHONEN, ANALYSE EN CONDITIELE RE-ENTRY
 # ==============================================================================
 output_dir = "OIL_CRUDE/Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
@@ -163,7 +162,7 @@ else:
             corr_s, _ = spearmanr(m_s.predict(X_val), ys_val)
             pct_l, pct_s = calculate_dynamic_threshold(corr_l), calculate_dynamic_threshold(corr_s)
         else:
-            pct_l, pct_s = 92.0, 92.0
+            pct_l, pct_s = 96.0, 96.0
 
         t_l = np.percentile(m_l.predict(X_tr), pct_l)
         t_s = np.percentile(m_s.predict(X_tr), pct_s)
@@ -176,10 +175,9 @@ else:
         prev_bids, prev_asks = df_day['prev_close_bid'].values, df_day['prev_close_ask'].values
         times, hours = df_day['time'].values, df_day['hour'].values
         
-        trades_this_day = []
         active, side = False, 0
-        current_trade = {}
-
+        trades_this_day = []
+        
         for j in range(len(bids) - 1):
             if not active:
                 if hours[j] < 23:
@@ -215,7 +213,11 @@ else:
                     })
                     trades_this_day.append(current_trade)
                     active = False
-
+                    
+                    # ✅ STOP CONDITIE: Stop alleen als resultaat POSITIEF is
+                    if r > 0:
+                        break
+        
         if not trades_this_day:
             new_records.append({"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(times[0])})
         else:
