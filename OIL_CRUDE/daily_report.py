@@ -21,6 +21,7 @@ def read_latest_csv_from_crudeoil():
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
 
+    # ✅ De API URL bevat nu de folder_path
     api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{folder_path}?ref=master"
     
     response = requests.get(api_url, headers=headers)
@@ -35,6 +36,7 @@ df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'], format='ISO8601')
 df_raw = df_raw.sort_values('time')
 
+# Data groeperen in dagen - FIX: 'min' i.p.v. 'T'
 full_range = pd.date_range(df_raw['time'].min(), df_raw['time'].max(), freq='min')
 df = pd.DataFrame({'time': full_range}).merge(df_raw, on='time', how='left')
 df['has_data'] = ~df['open_bid'].isna()
@@ -81,8 +83,10 @@ def add_features(df_in):
         df[f'{tf}_trend'] = (close - df[f'prev_{tf}_close']) / (df[f'prev_{tf}_close'] + 1e-9)
         df.drop(columns=['tf_key'], inplace=True)
     
+    # --- NIEUW: Sla de close van de vorige minuut op VOORDAT we shiften ---
     df['prev_close_bid'] = df['close_bid'].shift(1)
     df['prev_close_ask'] = df['close_ask'].shift(1)
+    # ----------------------------------------------------------------------
 
     f_cols = ['z_score_30m', 'rsi', '1h_trend', 'macd', 'day_progression', 'volatility_proxy', 'hour']
     df[f_cols] = df[f_cols].shift(1)
@@ -113,7 +117,7 @@ def calculate_dynamic_threshold(correlation_score):
         return 94.0
 
 # ==============================================================================
-# 3. HANDELSSIMULATIE MET HIGH/LOW, HARDE TP EN SL
+# 3. OPSCHONEN, ANALYSE EN CHRONOLOGISCHE OPSLAG
 # ==============================================================================
 output_dir = "OIL_CRUDE/Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
@@ -124,22 +128,18 @@ sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).gro
 
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
+    # FIX: Robuuste conversie naar datetime bij inladen
     existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'], format='ISO8601', errors='coerce')
+    
     mask = (existing_logs['exit_reason'] != "Data End (Pending)") & \
            (~existing_logs['entry_time'].dt.strftime('%Y-%m-%d').fillna('').str.contains(today_str))
+    
     existing_logs = existing_logs[mask].copy()
     processed_days = set(existing_logs['day'].astype(str).tolist())
 else:
     existing_logs, processed_days = pd.DataFrame(), set()
 
 new_days = [k for k in sorted_keys if k not in processed_days]
-
-# --- INSTELLINGEN ---
-SMOOTH_WINDOW = 3               
-HARD_TP_PCT = 0.005             # Harde Take Profit op 0.5%
-INITIAL_SL_PCT = 0.004          # Initiële Stop Loss op 0.4%
-TRAILING_ACTIVATION = 0.0025    # Start trailen bij +0.25% winst
-TRAILING_DISTANCE = 0.002       # Trail op 0.2% afstand van de piek
 
 if not new_days:
     print("Geen nieuwe dagen om te verwerken.")
@@ -154,7 +154,10 @@ else:
         
         if len(history_keys) < 20:
             df_temp = dag_dict[current_key]
-            new_records.append({"day": current_key, "return": 0, "exit_reason": "No Trade (Init)", "entry_time": str(df_temp['time'].iloc[0])})
+            new_records.append({
+                "day": current_key, "return": 0, "exit_reason": "No Trade (Init)",
+                "entry_time": str(df_temp['time'].iloc[0])
+            })
             continue
             
         X_tr, yl_tr, ys_tr = get_xy(history_keys[:int(len(history_keys)*0.75)], dag_dict)
@@ -179,90 +182,46 @@ else:
         
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
         
-        # Prijzen
-        close_bids, close_asks = df_day['close_bid'].values, df_day['close_ask'].values
-        high_bids, low_bids = df_day['high_bid'].values, df_day['low_bid'].values
-        high_asks, low_asks = df_day['high_ask'].values, df_day['low_ask'].values
-        prev_asks, prev_bids = df_day['prev_close_ask'].values, df_day['prev_close_bid'].values
+        # --- AANGEPAST: Haal ook de prev_closes op ---
+        bids, asks = df_day['close_bid'].values, df_day['close_ask'].values
+        prev_bids, prev_asks = df_day['prev_close_bid'].values, df_day['prev_close_ask'].values
         times, hours = df_day['time'].values, df_day['hour'].values
         
         active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(times[0])}
-        peak_price = 0
         
-        for j in range(len(close_bids) - 1):
+        for j in range(len(bids) - 1):
             if not active:
                 if hours[j] < 23:
                     if p_l[j] > t_l:
+                        # GEBRUIK PREV_ASKS voor entry prijs (close van vorige minuut)
                         ent_p, side, active = prev_asks[j], 1, True 
-                        tp_price = ent_p * (1 + HARD_TP_PCT)
-                        sl_price = ent_p * (1 - INITIAL_SL_PCT)
-                        peak_price = ent_p
                         day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
+                        curr_sl = -0.004
                     elif p_s[j] > t_s:
+                        # GEBRUIK PREV_BIDS voor entry prijs (close van vorige minuut)
                         ent_p, side, active = prev_bids[j], -1, True 
-                        tp_price = ent_p * (1 - HARD_TP_PCT)
-                        sl_price = ent_p * (1 + INITIAL_SL_PCT)
-                        peak_price = ent_p
                         day_res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
+                        curr_sl = -0.004
             else:
-                should_exit = False
-                reason = ""
-                exit_p = 0
-
-                # --- 1. CHECK HARDE TP & SL VIA HIGH/LOW ---
-                if side == 1: # LONG
-                    # Check SL
-                    if low_bids[j] <= sl_price:
-                        should_exit, reason, exit_p = True, "SL/Trail (HL)", sl_price
-                    # Check TP
-                    elif high_bids[j] >= tp_price:
-                        should_exit, reason, exit_p = True, "TP (HL)", tp_price
-                    
-                    # Update trailing
-                    peak_price = max(peak_price, high_bids[j])
-                    if peak_price >= ent_p * (1 + TRAILING_ACTIVATION):
-                        sl_price = max(sl_price, peak_price * (1 - TRAILING_DISTANCE))
+                r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
+                if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
                 
-                else: # SHORT
-                    # Check SL
-                    if high_asks[j] >= sl_price:
-                        should_exit, reason, exit_p = True, "SL/Trail (HL)", sl_price
-                    # Check TP
-                    elif low_asks[j] <= tp_price:
-                        should_exit, reason, exit_p = True, "TP (HL)", tp_price
-                    
-                    # Update trailing
-                    if peak_price == 0 or low_asks[j] < peak_price: peak_price = low_asks[j]
-                    if peak_price <= ent_p * (1 - TRAILING_ACTIVATION):
-                        sl_price = min(sl_price, peak_price * (1 + TRAILING_DISTANCE))
-
-                # --- 2. CHECK MODEL EXIT (Op Close) ---
-                if not should_exit:
-                    avg_p_l = np.mean(p_l[max(0, j-SMOOTH_WINDOW+1) : j+1])
-                    avg_p_s = np.mean(p_s[max(0, j-SMOOTH_WINDOW+1) : j+1])
-                    if (side == 1 and avg_p_l < -0.0001) or (side == -1 and avg_p_s < -0.0001):
-                        should_exit, reason, exit_p = True, "Model Exit", (close_bids[j] if side == 1 else close_asks[j])
-
-                # --- 3. TIJD/EOD ---
-                if not should_exit:
-                    if hours[j] >= 23:
-                        should_exit, reason, exit_p = True, "EOD (23h)", (close_bids[j] if side == 1 else close_asks[j])
-                    elif j == len(close_bids)-2:
-                        should_exit, reason, exit_p = True, "Data End (Pending)", (close_bids[j] if side == 1 else close_asks[j])
-
-                if should_exit:
-                    r = (exit_p - ent_p) / ent_p if side == 1 else (ent_p - exit_p) / ent_p
-                    day_res.update({
-                        "exit_time": str(times[j]), "exit_p": exit_p, 
-                        "return": r, "exit_reason": reason
-                    })
-                    active = False
-                    break 
+                is_data_end = (j == len(bids)-2)
+                is_time_end = (hours[j] >= 23)
+                
+                if r >= 0.005 or r <= curr_sl or is_time_end or is_data_end:
+                    reason = "TP/SL"
+                    if is_time_end: reason = "EOD (23h)"
+                    if is_data_end and not (r >= 0.005 or r <= curr_sl): reason = "Data End (Pending)"
+                    day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": reason})
+                    active = False; break
                     
         new_records.append(day_res)
 
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
+    # Laatste robuuste conversie voor sorteren
     final_df['entry_time'] = pd.to_datetime(final_df['entry_time'], format='ISO8601', errors='coerce')
     final_df = final_df.sort_values('entry_time', ascending=True)
+    
     final_df.to_csv(log_path, index=False)
     print(f"--- VOLTOOID --- Log bijgewerkt. Totaal: {len(final_df)}")
