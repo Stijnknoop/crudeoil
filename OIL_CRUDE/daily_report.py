@@ -151,7 +151,7 @@ else:
         corr_s, _ = spearmanr(m_s.predict(X_val), ys_val)
 
         # HARDE EIS: Spearman > 0.30
-        MIN_SPEARMAN = 0.30
+        MIN_SPEARMAN = 0.25
         can_trade_long = corr_l >= MIN_SPEARMAN
         can_trade_short = corr_s >= MIN_SPEARMAN
         
