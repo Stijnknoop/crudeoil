@@ -30,7 +30,7 @@ def read_latest_csv_from_crudeoil():
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
     return pd.read_csv(csv_file['download_url'])
 
-print("--- START ANALYSE (STRIKTERE SELECTIE) ---")
+print("--- START ANALYSE ---")
 df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'], format='ISO8601')
 df_raw = df_raw.sort_values('time')
@@ -102,19 +102,19 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
-# --- AANGEPAST: Hogere drempels voor MINDER maar betere trades ---
+# --- AANGEPAST: Lagere drempels voor meer trades ---
 def calculate_dynamic_threshold(correlation_score):
     if np.isnan(correlation_score) or correlation_score < 0.01:
-        return 99.8  # Zeer strikt bij lage correlatie
+        return 98.0  # Was 99.9
     elif correlation_score < 0.05:
-        return 99.5
+        return 95.0  # Was 98.0
     elif correlation_score < 0.10:
-        return 99.0
+        return 92.0  # Was 96.0
     else:
-        return 98.5  # Zelfs bij goede correlatie alleen de beste 1.5%
+        return 88.0  # Was 94.0
 
 # ==============================================================================
-# 3. ANALYSE EN OPSLAG
+# 3. ANALYSE EN MULTI-TRADE LOGICA
 # ==============================================================================
 output_dir = "OIL_CRUDE/Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
@@ -163,7 +163,7 @@ else:
             corr_s, _ = spearmanr(m_s.predict(X_val), ys_val)
             pct_l, pct_s = calculate_dynamic_threshold(corr_l), calculate_dynamic_threshold(corr_s)
         else:
-            pct_l, pct_s = 99.5, 99.5
+            pct_l, pct_s = 92.0, 92.0
 
         t_l = np.percentile(m_l.predict(X_tr), pct_l)
         t_s = np.percentile(m_s.predict(X_tr), pct_s)
@@ -225,4 +225,4 @@ else:
     final_df['entry_time'] = pd.to_datetime(final_df['entry_time'], format='ISO8601', errors='coerce')
     final_df = final_df.sort_values('entry_time', ascending=True)
     final_df.to_csv(log_path, index=False)
-    print(f"--- VOLTOOID --- Log bijgewerkt. Totaal records: {len(final_df)}")
+    print(f"--- VOLTOOID --- Log bijgewerkt. Totaal: {len(final_df)}")
