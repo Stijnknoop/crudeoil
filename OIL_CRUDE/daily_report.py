@@ -113,7 +113,7 @@ def calculate_dynamic_threshold(correlation_score):
         return 94.0
 
 # ==============================================================================
-# 3. HANDELSSIMULATIE MET TRAILING TP EN ACTIEVE EXIT
+# 3. HANDELSSIMULATIE MET HIGH/LOW, HARDE TP EN SL
 # ==============================================================================
 output_dir = "OIL_CRUDE/Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
@@ -134,11 +134,12 @@ else:
 
 new_days = [k for k in sorted_keys if k not in processed_days]
 
-# --- PARAMETERS ---
+# --- INSTELLINGEN ---
 SMOOTH_WINDOW = 3               
-INITIAL_SL = -0.004             # Harde stop op -0.4%
-TRAILING_ACTIVATION = 0.002     # Start met trailen bij +0.2% winst
-TRAILING_DISTANCE = 0.0015      # Houd de stop op 0.15% onder de piek
+HARD_TP_PCT = 0.005             # Harde Take Profit op 0.5%
+INITIAL_SL_PCT = 0.004          # Initiële Stop Loss op 0.4%
+TRAILING_ACTIVATION = 0.0025    # Start trailen bij +0.25% winst
+TRAILING_DISTANCE = 0.002       # Trail op 0.2% afstand van de piek
 
 if not new_days:
     print("Geen nieuwe dagen om te verwerken.")
@@ -177,65 +178,83 @@ else:
         if df_day.empty: continue
         
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
-        bids, asks = df_day['close_bid'].values, df_day['close_ask'].values
-        prev_bids, prev_asks = df_day['prev_close_bid'].values, df_day['prev_close_ask'].values
+        
+        # Prijzen
+        close_bids, close_asks = df_day['close_bid'].values, df_day['close_ask'].values
+        high_bids, low_bids = df_day['high_bid'].values, df_day['low_bid'].values
+        high_asks, low_asks = df_day['high_ask'].values, df_day['low_ask'].values
+        prev_asks, prev_bids = df_day['prev_close_ask'].values, df_day['prev_close_bid'].values
         times, hours = df_day['time'].values, df_day['hour'].values
         
         active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(times[0])}
-        peak_r = -999  # Hoogst behaalde rendement tijdens de trade
+        peak_price = 0
         
-        for j in range(len(bids) - 1):
+        for j in range(len(close_bids) - 1):
             if not active:
                 if hours[j] < 23:
                     if p_l[j] > t_l:
                         ent_p, side, active = prev_asks[j], 1, True 
+                        tp_price = ent_p * (1 + HARD_TP_PCT)
+                        sl_price = ent_p * (1 - INITIAL_SL_PCT)
+                        peak_price = ent_p
                         day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
-                        curr_sl = INITIAL_SL
-                        peak_r = 0
                     elif p_s[j] > t_s:
                         ent_p, side, active = prev_bids[j], -1, True 
+                        tp_price = ent_p * (1 - HARD_TP_PCT)
+                        sl_price = ent_p * (1 + INITIAL_SL_PCT)
+                        peak_price = ent_p
                         day_res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
-                        curr_sl = INITIAL_SL
-                        peak_r = 0
             else:
-                r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
-                peak_r = max(peak_r, r)
-                
-                # --- DYNAMISCHE TRAILING STOP LOGICA ---
-                # Als winst > 0.2%, trek stop omhoog naar (hoogste punt - 0.15%)
-                if peak_r >= TRAILING_ACTIVATION:
-                    curr_sl = max(curr_sl, peak_r - TRAILING_DISTANCE)
-                
-                # --- MODEL SENTIMENT (SMOOTHING) ---
-                avg_p_l = np.mean(p_l[max(0, j-SMOOTH_WINDOW+1) : j+1])
-                avg_p_s = np.mean(p_s[max(0, j-SMOOTH_WINDOW+1) : j+1])
-                
                 should_exit = False
                 reason = ""
+                exit_p = 0
+
+                # --- 1. CHECK HARDE TP & SL VIA HIGH/LOW ---
+                if side == 1: # LONG
+                    # Check SL
+                    if low_bids[j] <= sl_price:
+                        should_exit, reason, exit_p = True, "SL/Trail (HL)", sl_price
+                    # Check TP
+                    elif high_bids[j] >= tp_price:
+                        should_exit, reason, exit_p = True, "TP (HL)", tp_price
+                    
+                    # Update trailing
+                    peak_price = max(peak_price, high_bids[j])
+                    if peak_price >= ent_p * (1 + TRAILING_ACTIVATION):
+                        sl_price = max(sl_price, peak_price * (1 - TRAILING_DISTANCE))
                 
-                # 1. Check Trailing Stop / SL
-                if r <= curr_sl:
-                    should_exit, reason = True, "Trailing SL"
-                
-                # 2. Check Model Fatigue (Active Exit)
-                # Alleen als we op winst staan of de trend echt negatief wordt
-                elif side == 1 and avg_p_l < -0.0002:
-                    should_exit, reason = True, "Model Exit (Long Fatigue)"
-                elif side == -1 and avg_p_s < -0.0002:
-                    should_exit, reason = True, "Model Exit (Short Fatigue)"
-                
-                # 3. Tijd/Data checks
-                if hours[j] >= 23:
-                    should_exit, reason = True, "EOD (23h)"
-                elif j == len(bids)-2:
-                    should_exit, reason = True, "Data End (Pending)"
+                else: # SHORT
+                    # Check SL
+                    if high_asks[j] >= sl_price:
+                        should_exit, reason, exit_p = True, "SL/Trail (HL)", sl_price
+                    # Check TP
+                    elif low_asks[j] <= tp_price:
+                        should_exit, reason, exit_p = True, "TP (HL)", tp_price
+                    
+                    # Update trailing
+                    if peak_price == 0 or low_asks[j] < peak_price: peak_price = low_asks[j]
+                    if peak_price <= ent_p * (1 - TRAILING_ACTIVATION):
+                        sl_price = min(sl_price, peak_price * (1 + TRAILING_DISTANCE))
+
+                # --- 2. CHECK MODEL EXIT (Op Close) ---
+                if not should_exit:
+                    avg_p_l = np.mean(p_l[max(0, j-SMOOTH_WINDOW+1) : j+1])
+                    avg_p_s = np.mean(p_s[max(0, j-SMOOTH_WINDOW+1) : j+1])
+                    if (side == 1 and avg_p_l < -0.0001) or (side == -1 and avg_p_s < -0.0001):
+                        should_exit, reason, exit_p = True, "Model Exit", (close_bids[j] if side == 1 else close_asks[j])
+
+                # --- 3. TIJD/EOD ---
+                if not should_exit:
+                    if hours[j] >= 23:
+                        should_exit, reason, exit_p = True, "EOD (23h)", (close_bids[j] if side == 1 else close_asks[j])
+                    elif j == len(close_bids)-2:
+                        should_exit, reason, exit_p = True, "Data End (Pending)", (close_bids[j] if side == 1 else close_asks[j])
 
                 if should_exit:
+                    r = (exit_p - ent_p) / ent_p if side == 1 else (ent_p - exit_p) / ent_p
                     day_res.update({
-                        "exit_time": str(times[j]), 
-                        "exit_p": bids[j] if side == 1 else asks[j], 
-                        "return": r, 
-                        "exit_reason": reason
+                        "exit_time": str(times[j]), "exit_p": exit_p, 
+                        "return": r, "exit_reason": reason
                     })
                     active = False
                     break 
@@ -245,6 +264,5 @@ else:
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
     final_df['entry_time'] = pd.to_datetime(final_df['entry_time'], format='ISO8601', errors='coerce')
     final_df = final_df.sort_values('entry_time', ascending=True)
-    
     final_df.to_csv(log_path, index=False)
     print(f"--- VOLTOOID --- Log bijgewerkt. Totaal: {len(final_df)}")
