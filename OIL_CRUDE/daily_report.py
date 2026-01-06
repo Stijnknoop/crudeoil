@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import os
 import re
-import joblib
 from sklearn.ensemble import RandomForestRegressor
 from scipy.stats import spearmanr
 from datetime import datetime
@@ -30,7 +29,7 @@ def read_latest_csv_from_crudeoil():
     csv_file = next((f for f in files if f['name'].endswith('.csv')), None)
     return pd.read_csv(csv_file['download_url'])
 
-print("--- START ANALYSE ---")
+print("--- START ANALYSE (SPEARMAN > 0.30 SNIPER MODE) ---")
 df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'], format='ISO8601')
 df_raw = df_raw.sort_values('time')
@@ -63,7 +62,7 @@ dag_dict = {f'dag_{i}': d[d['has_data']].reset_index(drop=True)
             for i, (day, d) in enumerate(df.groupby('trading_day'), start=1)}
 
 # ==============================================================================
-# 2. FEATURE ENGINEERING & HELPERS
+# 2. FEATURE ENGINEERING
 # ==============================================================================
 def add_features(df_in):
     df = df_in.copy().sort_values('time')
@@ -105,22 +104,8 @@ def get_xy(keys, d_dict):
             ys.append([(p[i] - np.min(p[i+1:i+1+HORIZON]))/p[i] for i in range(len(df_f)-HORIZON)])
     return (np.vstack(X), np.concatenate(yl), np.concatenate(ys)) if X else (None, None, None)
 
-def calculate_dynamic_threshold(correlation_score):
-    """
-    INVERSE LOGICA: Lager vertrouwen (Spearman) betekent dat we 
-    STRENGER worden (hoger percentiel).
-    """
-    if np.isnan(correlation_score) or correlation_score < 0.10:
-        return 99.5  # Bijna geen trades bij zeer laag vertrouwen
-    elif correlation_score < 0.20:
-        return 98.0  # Erg streng
-    elif correlation_score < 0.30:
-        return 96.5  # Gemiddeld
-    else:
-        return 94.0  # Vertrouwd: gebruik de standaard 94e percentiel
-
 # ==============================================================================
-# 3. OPSCHONEN, ANALYSE EN CHRONOLOGISCHE OPSLAG
+# 3. TRADING LOOP MET HARDE SPEARMAN EIS
 # ==============================================================================
 output_dir = "OIL_CRUDE/Trading_details"
 log_path = os.path.join(output_dir, "trading_logs.csv")
@@ -145,22 +130,18 @@ new_days = [k for k in sorted_keys if k not in processed_days]
 if not new_days:
     print("Geen nieuwe dagen om te verwerken.")
 else:
-    print(f"Verwerken: {new_days}")
-    new_records = []
-    insight_records = []
+    new_records, insight_records = [], []
     
     for current_key in new_days:
         idx = sorted_keys.index(current_key)
-        history_start = max(0, idx - 40)
-        history_keys = sorted_keys[history_start:idx]
+        history_keys = sorted_keys[max(0, idx - 40):idx]
         
         if len(history_keys) < 20:
-            df_temp = dag_dict[current_key]
-            new_records.append({"day": current_key, "return": 0, "exit_reason": "No Trade (Init)", "entry_time": str(df_temp['time'].iloc[0])})
             continue
             
         X_tr, yl_tr, ys_tr = get_xy(history_keys[:int(len(history_keys)*0.75)], dag_dict)
         X_val, yl_val, ys_val = get_xy(history_keys[int(len(history_keys)*0.75):], dag_dict)
+        
         if X_tr is None or X_val is None: continue
 
         m_l = RandomForestRegressor(n_estimators=100, max_depth=6, n_jobs=-1, random_state=42).fit(X_tr, yl_tr)
@@ -168,76 +149,67 @@ else:
         
         corr_l, _ = spearmanr(m_l.predict(X_val), yl_val)
         corr_s, _ = spearmanr(m_s.predict(X_val), ys_val)
-        
-        pct_l, pct_s = calculate_dynamic_threshold(corr_l), calculate_dynamic_threshold(corr_s)
-        t_l = np.percentile(m_l.predict(X_tr), pct_l)
-        t_s = np.percentile(m_s.predict(X_tr), pct_s)
 
-        # Insights bijhouden voor deze dag
-        conflicts_detected = 0
+        # HARDE EIS: Spearman > 0.30
+        MIN_SPEARMAN = 0.30
+        can_trade_long = corr_l >= MIN_SPEARMAN
+        can_trade_short = corr_s >= MIN_SPEARMAN
         
+        # We gebruiken een streng percentiel (96e) om alleen top-signalen te pakken
+        t_l = np.percentile(m_l.predict(X_tr), 96.0)
+        t_s = np.percentile(m_s.predict(X_tr), 96.0)
+
         df_day = add_features(dag_dict[current_key]).reset_index(drop=True)
-        if df_day.empty: continue
+        active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(df_day['time'].iloc[0])}
         
-        p_l, p_s = m_l.predict(df_day[f_cols].values), m_s.predict(df_day[f_cols].values)
-        bids, asks = df_day['close_bid'].values, df_day['close_ask'].values
-        prev_bids, prev_asks = df_day['prev_close_bid'].values, df_day['prev_close_ask'].values
-        times, hours = df_day['time'].values, df_day['hour'].values
-        
-        active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(times[0])}
-        
-        for j in range(len(bids) - 1):
-            if not active:
-                if hours[j] < 23:
-                    trigger_l = p_l[j] > t_l
-                    trigger_s = p_s[j] > t_s
+        conflicts = 0
+        if not can_trade_long and not can_trade_short:
+            day_res["exit_reason"] = f"Blocked (Spearman L:{corr_l:.2f} S:{corr_s:.2f})"
+        else:
+            p_l, p_s = m_l.predict(df_day[f_cols].values), m_s.predict(df_day[f_cols].values)
+            bids, asks = df_day['close_bid'].values, df_day['close_ask'].values
+            prev_bids, prev_asks = df_day['prev_close_bid'].values, df_day['prev_close_ask'].values
+            times, hours = df_day['time'].values, df_day['hour'].values
+
+            for j in range(len(bids) - 1):
+                if not active:
+                    if hours[j] < 23:
+                        trig_l = can_trade_long and p_l[j] > t_l
+                        trig_s = can_trade_short and p_s[j] > t_s
+                        
+                        if trig_l and trig_s:
+                            conflicts += 1
+                            continue
+                        
+                        if trig_l:
+                            ent_p, side, active = prev_asks[j], 1, True 
+                            day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
+                            curr_sl = -0.004
+                        elif trig_s:
+                            ent_p, side, active = prev_bids[j], -1, True 
+                            day_res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
+                            curr_sl = -0.004
+                else:
+                    r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
+                    if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
                     
-                    # CONFLICT FILTER: Alleen handelen bij een duidelijke richting
-                    if trigger_l and trigger_s:
-                        conflicts_detected += 1
-                        continue # Doe niks, model is in de war
-                    
-                    if trigger_l:
-                        ent_p, side, active = prev_asks[j], 1, True 
-                        day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
-                        curr_sl = -0.004
-                    elif trigger_s:
-                        ent_p, side, active = prev_bids[j], -1, True 
-                        day_res.update({"entry_time": str(times[j]), "side": "Short", "entry_p": ent_p})
-                        curr_sl = -0.004
-            else:
-                r = (bids[j] - ent_p) / ent_p if side == 1 else (ent_p - asks[j]) / ent_p
-                if r >= 0.0025: curr_sl = max(curr_sl, r - 0.002)
-                
-                is_data_end = (j == len(bids)-2)
-                is_time_end = (hours[j] >= 23)
-                
-                if r >= 0.005 or r <= curr_sl or is_time_end or is_data_end:
-                    reason = "TP/SL"
-                    if is_time_end: reason = "EOD (23h)"
-                    if is_data_end and not (r >= 0.005 or r <= curr_sl): reason = "Data End (Pending)"
-                    day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": reason})
-                    active = False; break
+                    if r >= 0.005 or r <= curr_sl or hours[j] >= 23 or j == len(bids)-2:
+                        day_res.update({"exit_time": str(times[j]), "exit_p": bids[j] if side == 1 else asks[j], "return": r, "exit_reason": "TP/SL/EOD"})
+                        active = False; break
                     
         new_records.append(day_res)
         insight_records.append({
-            "target_day": current_key,
-            "corr_l": round(corr_l, 4), "corr_s": round(corr_s, 4),
-            "pct_l": pct_l, "pct_s": pct_s,
-            "min_p_l": round(t_l, 6), "min_p_s": round(t_s, 6),
-            "conflicts": conflicts_detected
+            "target_day": current_key, "corr_l": round(corr_l, 4), "corr_s": round(corr_s, 4),
+            "min_p_l": round(t_l, 6), "min_p_s": round(t_s, 6), "conflicts": conflicts,
+            "status": "Eligible" if (can_trade_long or can_trade_short) else "Blocked"
         })
 
-    # Opslaan van data
+    # Opslaan
     final_df = pd.concat([existing_logs, pd.DataFrame(new_records)], ignore_index=True)
-    final_df['entry_time'] = pd.to_datetime(final_df['entry_time'], format='ISO8601', errors='coerce')
-    final_df = final_df.sort_values('entry_time', ascending=True)
     final_df.to_csv(log_path, index=False)
-
-    new_insights_df = pd.DataFrame(insight_records)
+    
+    new_ins_df = pd.DataFrame(insight_records)
     if os.path.exists(insight_path):
-        old_insights = pd.read_csv(insight_path)
-        new_insights_df = pd.concat([old_insights, new_insights_df], ignore_index=True).drop_duplicates(subset=['target_day'])
-    new_insights_df.to_csv(insight_path, index=False)
-
-    print(f"--- VOLTOOID --- Log en Insights bijgewerkt.")
+        new_ins_df = pd.concat([pd.read_csv(insight_path), new_ins_df], ignore_index=True).drop_duplicates(subset=['target_day'])
+    new_ins_df.to_csv(insight_path, index=False)
+    print("--- VOLTOOID ---")
