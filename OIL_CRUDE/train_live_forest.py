@@ -87,6 +87,14 @@ def calculate_dynamic_threshold(correlation_score):
 print("--- START PRODUCTIE TRAINING ---")
 df_raw = read_latest_csv_from_crudeoil()
 df_raw['time'] = pd.to_datetime(df_raw['time'], format='ISO8601')
+
+# --- NIEUWE FILTER: Alleen data tot gisteren ---
+today_dt = datetime.now().date()
+df_raw = df_raw[df_raw['time'].dt.date < today_dt].copy()
+print(f"Data gefilterd: Laatste record in training is nu van: {df_raw['time'].max()}")
+# -----------------------------------------------
+
+
 df_raw = df_raw.sort_values('time')
 
 # Data groeperen (Identiek aan backtest)
