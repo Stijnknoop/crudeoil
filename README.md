@@ -44,3 +44,6 @@ Dit project bevat een geautomatiseerde pipeline voor het ophalen van financiële
         
         H -- Alle dagen klaar --> T[Update trading_logs.csv];
         T --> U[Einde];
+
+
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/53d7a4ce-5b5a-409a-89b1-b30b21ea2f36" />
