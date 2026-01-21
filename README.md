@@ -12,35 +12,35 @@ Dit project bevat een geautomatiseerde pipeline voor het ophalen van financiële
 
 **DAILY REPORT LOGICA**
 
-graph TD
-    A[Start Daily Report] --> B{Lees trading_logs.csv};
-    B -- Bestaat --> C[Haal lijst verwerkte dagen op];
-    B -- Bestaat niet --> D[Start lege lijst];
-    C & D --> E[Vergelijk met nieuwe Data];
-    E --> F{Zijn er nieuwe dagen?};
-    F -- Nee --> G[Stop Script];
-    F -- Ja --> H[Start Loop per Nieuwe Dag];
-
-    subgraph "Rolling Window Proces"
-        H --> I[Selecteer vorige 40 dagen];
-        I --> J[Train Random Forest (75% data)];
-        J --> K[Valideer op recente data (25%)];
-        K --> L{Check Correlatie Score};
-        L -- Goed Model --> M[Lagere Drempel (Aggressiever)];
-        L -- Slecht Model --> N[Hogere Drempel (Defensief)];
-    end
-
-    M & N --> O[Simuleer Huidige Dag];
+    graph TD
+        A[Start Daily Report] --> B{Lees trading_logs.csv};
+        B -- Bestaat --> C[Haal lijst verwerkte dagen op];
+        B -- Bestaat niet --> D[Start lege lijst];
+        C & D --> E[Vergelijk met nieuwe Data];
+        E --> F{Zijn er nieuwe dagen?};
+        F -- Nee --> G[Stop Script];
+        F -- Ja --> H[Start Loop per Nieuwe Dag];
     
-    subgraph "Trade Simulatie"
-        O --> P{Signaal > Drempel?};
-        P -- Ja --> Q[Open Trade];
-        Q --> R{Check SL / TP / Tijd};
-        R -- Exit --> S[Sla resultaat op in geheugen];
-    end
-
-    S --> H;
-    P -- Nee --> O;
+        subgraph "Rolling Window Proces"
+            H --> I[Selecteer vorige 40 dagen];
+            I --> J[Train Random Forest (75% data)];
+            J --> K[Valideer op recente data (25%)];
+            K --> L{Check Correlatie Score};
+            L -- Goed Model --> M[Lagere Drempel (Aggressiever)];
+            L -- Slecht Model --> N[Hogere Drempel (Defensief)];
+        end
     
-    H -- Alle dagen klaar --> T[Update trading_logs.csv];
-    T --> U[Einde];
+        M & N --> O[Simuleer Huidige Dag];
+        
+        subgraph "Trade Simulatie"
+            O --> P{Signaal > Drempel?};
+            P -- Ja --> Q[Open Trade];
+            Q --> R{Check SL / TP / Tijd};
+            R -- Exit --> S[Sla resultaat op in geheugen];
+        end
+    
+        S --> H;
+        P -- Nee --> O;
+        
+        H -- Alle dagen klaar --> T[Update trading_logs.csv];
+        T --> U[Einde];
