@@ -125,10 +125,12 @@ os.makedirs(output_dir, exist_ok=True)
 
 today_str = datetime.now().strftime('%Y-%m-%d')
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
+# --- Filter zodat we pas vanaf dag 41 beginnen ---
+sorted_keys = [k for k in sorted_keys if int(re.search(r'\d+', k).group()) >= 41]
 
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
-    # FIX: Robuuste conversie naar datetime bij inladen
+    # Robuuste conversie naar datetime bij inladen
     existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'], format='ISO8601', errors='coerce')
     
     mask = (existing_logs['exit_reason'] != "Data End (Pending)") & \
