@@ -56,5 +56,4 @@ jobs:
           git add OIL_CRUDE/Trading_details/
           # We behouden [skip ci] voor de zekerheid, maar paths-ignore is je extra vangnet
           git commit -m "Update logs en plots: $(date +'%Y-%m-%d') [skip ci]" || echo "Geen wijzigingen"
-          git pull origin master --rebase
-          git push origin master
+          git push origin master --force
