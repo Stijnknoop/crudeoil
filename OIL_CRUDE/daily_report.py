@@ -125,12 +125,10 @@ os.makedirs(output_dir, exist_ok=True)
 
 today_str = datetime.now().strftime('%Y-%m-%d')
 sorted_keys = sorted(dag_dict.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
-# --- Filter zodat we pas vanaf dag 41 beginnen ---
-sorted_keys = [k for k in sorted_keys if int(re.search(r'\d+', k).group()) >= 41]
 
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
-    # Robuuste conversie naar datetime bij inladen
+    # FIX: Robuuste conversie naar datetime bij inladen
     existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'], format='ISO8601', errors='coerce')
     
     mask = (existing_logs['exit_reason'] != "Data End (Pending)") & \
@@ -184,11 +182,10 @@ else:
         
         p_l, p_s = m_l.predict(df_day[f_selected].values), m_s.predict(df_day[f_selected].values)
         
-        # --- AANGEPAST: Haal ook de prev_closes en trends op ---
+        # --- AANGEPAST: Haal ook de prev_closes op ---
         bids, asks = df_day['close_bid'].values, df_day['close_ask'].values
         prev_bids, prev_asks = df_day['prev_close_bid'].values, df_day['prev_close_ask'].values
         times, hours = df_day['time'].values, df_day['hour'].values
-        trends_1h = df_day['1h_trend'].values # <--- NIEUW: Trend array ophalen
         
         active, day_res = False, {"day": current_key, "return": 0, "exit_reason": "No Trade", "entry_time": str(times[0])}
         
@@ -196,14 +193,10 @@ else:
             if not active:
                 if hours[j] < 23:
                     if p_l[j] > t_l:
-                        # --- NIEUWE LOGICA: Trend Filter ---
-                        # Alleen Long als de trend NIET oververhit is (< 0.1%)
-                        if trends_1h[j] < 0.001:
-                            ent_p, side, active = prev_asks[j], 1, True 
-                            day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
-                            curr_sl = -0.004
-                        # -----------------------------------
-
+                        # GEBRUIK PREV_ASKS voor entry prijs (close van vorige minuut)
+                        ent_p, side, active = prev_asks[j], 1, True 
+                        day_res.update({"entry_time": str(times[j]), "side": "Long", "entry_p": ent_p})
+                        curr_sl = -0.004
                     elif p_s[j] > t_s:
                         # GEBRUIK PREV_BIDS voor entry prijs (close van vorige minuut)
                         ent_p, side, active = prev_bids[j], -1, True 
