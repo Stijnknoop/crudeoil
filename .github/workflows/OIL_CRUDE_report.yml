@@ -38,10 +38,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install --prefer-binary requests pandas numpy matplotlib scikit-learn scipy joblib
 
-      - name: Draai rapportage script
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python OIL_CRUDE/daily_report.py
+    #  - name: Draai rapportage script
+    #    env:
+    #      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    #    run: python OIL_CRUDE/daily_report.py
 
       - name: Draai rapportage new strategy
         env:
