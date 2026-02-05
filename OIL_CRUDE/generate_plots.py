@@ -192,7 +192,7 @@ def generate_performance_plots():
     ax1.axhline(START_CAPITAL, color='black', linewidth=1)
     
     fig.autofmt_xdate()
-    save_path = os.path.join(PLOT_DIR, "equity_curve_compounding.png")
+    save_path = os.path.join(LOG_DIR, "equity_curve_compounding.png")
     plt.savefig(save_path, bbox_inches='tight', dpi=150)
     print(f"Grafiek opgeslagen: {save_path}")
     plt.close()
