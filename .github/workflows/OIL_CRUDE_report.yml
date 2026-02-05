@@ -43,10 +43,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python OIL_CRUDE/daily_report.py
 
-      - name: Genereer Trade Plots
+      - name: Draai rapportage new strategy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python OIL_CRUDE/generate_plots.py
+        run: python OIL_CRUDE/new_strategy.py
+      
+      #- name: Genereer Trade Plots
+      #  env:
+       #   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #  run: python OIL_CRUDE/generate_plots.py
 
       - name: Push Resultaten naar Repo
         run: |
