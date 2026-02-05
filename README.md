@@ -4,7 +4,6 @@ Dit project bevat een geavanceerde, zelf-lerende trading pipeline voor Crude Oil
 
 Het algoritme analyseert continu het marktsentiment (Context) en berekent **on-the-fly** welke marktomstandigheden historisch gezien winstgevend zijn. Via een **Rolling Window Walk-Forward Analysis** past de bot zich elke dag aan aan de veranderende markt.
 
-![Equity Curve](https://github.com/user-attachments/assets/53d7a4ce-5b5a-409a-89b1-b30b21ea2f36)
 
 ## 🧠 De Strategie: "Context Sniper"
 
