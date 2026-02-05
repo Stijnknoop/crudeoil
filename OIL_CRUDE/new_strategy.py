@@ -2,7 +2,7 @@ import requests
 import pandas as pd
 import numpy as np
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ==============================================================================
 # 1. CONFIGURATIE & INSTELLINGEN
@@ -13,18 +13,21 @@ FOLDER_PATH = "OIL_CRUDE"
 OUTPUT_DIR = "OIL_CRUDE/Trading_details"
 LOG_FILE = "trading_logs.csv"
 
+# --- BACKTEST WINDOW ---
+ROLLING_WINDOW_DAYS = 40     # Aantal dagen historie om op te trainen
+
 # --- ACCOUNT & RISK ---
 START_CAPITAL = 10000
 MAX_SLOTS = 10
-LEVERAGE = 5                     # <--- NIEUW: Hefboom (Multiplier)
+LEVERAGE = 5
 SLOT_SIZE_CASH = START_CAPITAL / MAX_SLOTS 
 COOLDOWN_MINUTES = 10
 
 # --- STRATEGIE FILTERS (DYNAMISCH) ---
-MIN_HISTORICAL_TRADES = 15       # Minimaal aantal keer voorgekomen in historie
-MIN_EXPECTED_ROI = 0.0025        # <--- NIEUW: 0.0025 = 0.25% verwachte winst per trade (ipv harde 0.15)
-MIN_RANGE_PCT = 0.0008           # <--- NIEUW: Range moet min. 0.08% van de prijs zijn (vervangt > 0.05)
-TARGET_RANGE_RATIO = 0.5         # <--- NIEUW: Target is 0.5x de Range (was hardcoded)
+MIN_HISTORICAL_TRADES = 15       # Minimaal aantal trades in de afgelopen 40 dagen
+MIN_EXPECTED_ROI = 0.0025        # 0.25% gemiddelde winst per trade vereist
+MIN_RANGE_PCT = 0.0008           # Range moet min. 0.08% van de prijs zijn
+TARGET_RANGE_RATIO = 0.5         # Target is 0.5x de Range
 
 # ==============================================================================
 # 2. DATA OPHALEN & FEATURES
@@ -81,180 +84,211 @@ def prepare_data(df):
     df['position_pct'] = (df['close_bid'] - df['min_so_far']) / df['range_so_far']
     df['position_pct'] = df['position_pct'].replace([np.inf, -np.inf], np.nan).fillna(0.5)
     
-    # 4. Binning
+    # 4. Binning & Filters
     df['rsi_bin'] = pd.cut(df['rsi'], bins=[0, 30, 70, 100], labels=['Oversold', 'Neutraal', 'Overbought'])
     df['pos_bin'] = pd.cut(df['position_pct'], bins=[-0.1, 0.3, 0.7, 1.1], labels=['Low', 'Mid', 'High'])
     df['prev_day_trend'] = np.where(df['day_change'].fillna(0) > 0, 'Groen', 'Rood')
     
-    # 5. Ruis Filter (Relatief aan prijs)
-    # Range moet groter zijn dan X% van de huidige prijs
+    # Percentuele range voor filter
     df['range_pct_of_price'] = df['range_so_far'] / df['close_bid']
     
     return df
 
 # ==============================================================================
-# 3. DE "BRAIN" (DYNAMISCHE STRATEGIE TRAINING)
+# 3. DE TRAINER (OP EEN SPECIFIEKE SLICE DATA)
 # ==============================================================================
-def train_strategy_on_fly(df):
-    print("Strategie aan het herberekenen (Percentueel)...")
-    train_df = df.copy()
-    
+def train_on_window(train_df):
+    """
+    Berekent de winstgevende regels op basis van de meegegeven 'train_df' (de window).
+    """
     entry = train_df['close_ask']
-    # Target is variabel ingesteld (bv 0.5x Range)
     target_dist = train_df['range_so_far'] * TARGET_RANGE_RATIO
     eod_close = train_df.groupby('date')['close_bid'].transform('last')
     
-    # Look-ahead
+    # Look-ahead binnen de training set
     max_future = train_df.iloc[::-1].groupby('date')['close_bid'].cummax().iloc[::-1]
     
-    # Win Conditie: Target geraakt EN Range groot genoeg (Percentueel filter)
+    # Win Condities
     valid_range = train_df['range_pct_of_price'] > MIN_RANGE_PCT
     is_win = (max_future >= (entry + target_dist)) & valid_range
     
-    # P&L calculation (NU PERCENTUEEL!)
+    # ROI Berekening
     pnl_abs = np.where(is_win, target_dist, eod_close - entry)
-    train_df['roi_pct'] = pnl_abs / entry # Return on Investment per trade
+    train_df = train_df.assign(roi_pct = pnl_abs / entry)
     
-    # Groepeer
+    # Statistieken per conditie
     stats = train_df.groupby(
         ['prev_day_trend', 'pos_bin', 'rsi_bin', 'hour'], 
         observed=False
     )['roi_pct'].agg(['mean', 'count'])
     
-    # FILTER: "Sniper" Regels op basis van ROI
-    # We willen trades die gemiddeld > 0.25% (of user setting) opleveren
+    # Filter de regels
     approved_conditions = stats[
         (stats['count'] >= MIN_HISTORICAL_TRADES) & 
         (stats['mean'] > MIN_EXPECTED_ROI) 
     ].index.tolist()
     
-    approved_set = set(approved_conditions)
-    
-    print(f"Training voltooid. {len(approved_set)} scenario's gevonden met >{MIN_EXPECTED_ROI*100}% verwachte winst.")
-    return approved_set
+    return set(approved_conditions)
 
 # ==============================================================================
-# 4. HOOFDPROGRAMMA
+# 4. HOOFDPROGRAMMA (ROLLING WINDOW LOOP)
 # ==============================================================================
-print(f"--- START BOT (LEVERAGE: {LEVERAGE}x) ---")
+print(f"--- START ROLLING WINDOW BOT ({ROLLING_WINDOW_DAYS} DAGEN) ---")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 log_path = os.path.join(OUTPUT_DIR, LOG_FILE)
 
-# A. Data Ophalen
+# A. Data laden
 df_raw = read_latest_csv_from_github()
 if df_raw is None: exit()
-
 df = prepare_data(df_raw)
 
-# B. Strategie Trainen
-winning_rules_set = train_strategy_on_fly(df)
+# B. Bepaal welke dagen we moeten verwerken
+unique_dates = sorted(df['date'].unique())
 
-# C. Logs Checken
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
     if not existing_logs.empty:
         existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'])
-        last_trade_time = existing_logs['entry_time'].max()
-        print(f"Laatst gelogde trade: {last_trade_time}")
+        last_log_date = existing_logs['entry_time'].max().date()
+        print(f"Laatst verwerkte datum in logs: {last_log_date}")
+        
+        # We beginnen bij de dag NA de laatste log
+        # Zoek de index van de volgende dag in unique_dates
+        try:
+            start_index = unique_dates.index(last_log_date) + 1
+        except ValueError:
+            # Als last_log_date niet in de lijst staat (bv weekend), pak alles groter
+            future_dates = [d for d in unique_dates if d > last_log_date]
+            if not future_dates:
+                print("Alles is al bijgewerkt.")
+                exit()
+            start_index = unique_dates.index(future_dates[0])
     else:
-        last_trade_time = pd.Timestamp.min
+        start_index = ROLLING_WINDOW_DAYS
 else:
     existing_logs = pd.DataFrame()
-    last_trade_time = pd.Timestamp.min
+    start_index = ROLLING_WINDOW_DAYS # We hebben minimaal X dagen nodig om te beginnen
 
-# D. Nieuwe Data Selecteren
-df_sim = df[df['time'] > last_trade_time].copy()
+# Check of we genoeg historie hebben om te starten
+if start_index < ROLLING_WINDOW_DAYS:
+    print(f"Nog niet genoeg data voor eerste training. Start bij index {ROLLING_WINDOW_DAYS}.")
+    start_index = ROLLING_WINDOW_DAYS
 
-if df_sim.empty:
-    print("Geen nieuwe data.")
+# Dagen die we gaan verwerken
+days_to_process = unique_dates[start_index:]
+
+if not days_to_process:
+    print("Geen nieuwe dagen om te verwerken.")
     exit()
 
-print(f"Analyseren van {len(df_sim)} nieuwe minuten...")
+print(f"Gevonden nieuwe dagen: {len(days_to_process)}")
 
-# E. Simulatie Loop
-new_trades = []
-positions = []
-cooldown = 0
+# C. De Grote Loop
+all_new_trades = []
 
-for i, row in df_sim.iterrows():
-    current_time = row['time']
-    current_bid = row['close_bid']
-    current_ask = row['close_ask']
+for target_day in days_to_process:
+    target_idx = unique_dates.index(target_day)
     
-    # 1. Posities Managen
-    for pos in positions[:]:
-        # Target Hit?
-        if row['high_bid'] >= pos['target_price']:
-            roi = (pos['target_price'] - pos['entry_price']) / pos['entry_price']
-            new_trades.append({
-                'day': row['date'],
-                'entry_time': pos['entry_time'],
-                'entry_p': pos['entry_price'],
-                'side': 'Long',
-                'leverage': LEVERAGE, # Loggen voor administratie
-                'exit_time': current_time,
-                'exit_p': pos['target_price'],
-                'return': roi, 
-                'exit_reason': 'Target Hit',
-                'outcome': 'WIN'
-            })
-            positions.remove(pos)
-            
-        # Einde Dag Timeout?
-        elif row['time_str'] >= '22:00':
-            roi = (current_bid - pos['entry_price']) / pos['entry_price']
-            new_trades.append({
-                'day': row['date'],
-                'entry_time': pos['entry_time'],
-                'entry_p': pos['entry_price'],
-                'side': 'Long',
-                'leverage': LEVERAGE,
-                'exit_time': current_time,
-                'exit_p': current_bid,
-                'return': roi,
-                'exit_reason': 'EOD Timeout',
-                'outcome': 'WIN' if roi > 0 else 'LOSS'
-            })
-            positions.remove(pos)
-
-    # 2. Entry Logica
-    if cooldown > 0: cooldown -= 1
+    # 1. Bepaal de Training Window (De X dagen VOOR target_day)
+    train_start_date = unique_dates[target_idx - ROLLING_WINDOW_DAYS]
+    train_end_date = unique_dates[target_idx - 1] # De dag ervoor
     
-    # Check Ruis Filter (Percentueel)
-    valid_range = (row['range_so_far'] / current_ask) > MIN_RANGE_PCT
+    print(f"Processing {target_day} | Training: {train_start_date} t/m {train_end_date}")
+    
+    # Slice Data
+    mask_train = (df['date'] >= train_start_date) & (df['date'] <= train_end_date)
+    train_df = df.loc[mask_train].copy()
+    
+    mask_test = (df['date'] == target_day)
+    test_df = df.loc[mask_test].copy()
+    
+    if train_df.empty or test_df.empty:
+        continue
 
-    if (len(positions) < MAX_SLOTS) and (cooldown == 0) and \
-       (row['time_str'] < '20:00') and valid_range:
-        
-        current_state = (
-            row['prev_day_trend'], 
-            row['pos_bin'], 
-            row['rsi_bin'], 
-            row['hour']
-        )
-        
-        if current_state in winning_rules_set:
-            # ENTRY BEREKENING MET LEVERAGE
-            target_gain = row['range_so_far'] * TARGET_RANGE_RATIO
-            
-            # Positie grootte met hefboom
-            # Effectief bedrag om te kopen = (Cash per Slot) * Leverage
-            effective_investment = SLOT_SIZE_CASH * LEVERAGE
-            units = effective_investment / current_ask
-            
-            positions.append({
-                'entry_time': current_time,
-                'entry_price': current_ask,
-                'target_price': current_ask + target_gain,
-                'units': units
-            })
-            cooldown = COOLDOWN_MINUTES
+    # 2. Trainen op het verleden (Dynamisch rulebook maken voor DEZE dag)
+    daily_rules_set = train_on_window(train_df)
+    
+    if not daily_rules_set:
+        # Geen winstgevende strategie gevonden voor deze marktomstandigheden
+        # We slaan de dag over (Flat)
+        continue
 
-# F. Opslaan
-if new_trades:
-    new_trades_df = pd.DataFrame(new_trades)
-    print(f"Nieuwe trades: {len(new_trades_df)}")
+    # 3. Traden op de Target Dag
+    positions = []
+    cooldown = 0
+    
+    for i, row in test_df.iterrows():
+        current_time = row['time']
+        current_bid = row['close_bid']
+        current_ask = row['close_ask']
+        
+        # --- POSITIE MANAGEMENT ---
+        for pos in positions[:]:
+            # Target Hit?
+            if row['high_bid'] >= pos['target_price']:
+                roi = (pos['target_price'] - pos['entry_price']) / pos['entry_price']
+                all_new_trades.append({
+                    'day': row['date'],
+                    'entry_time': pos['entry_time'],
+                    'entry_p': pos['entry_price'],
+                    'side': 'Long',
+                    'leverage': LEVERAGE,
+                    'exit_time': current_time,
+                    'exit_p': pos['target_price'],
+                    'return': roi,
+                    'exit_reason': 'Target Hit',
+                    'outcome': 'WIN'
+                })
+                positions.remove(pos)
+                
+            # EOD Timeout
+            elif row['time_str'] >= '22:00':
+                roi = (current_bid - pos['entry_price']) / pos['entry_price']
+                all_new_trades.append({
+                    'day': row['date'],
+                    'entry_time': pos['entry_time'],
+                    'entry_p': pos['entry_price'],
+                    'side': 'Long',
+                    'leverage': LEVERAGE,
+                    'exit_time': current_time,
+                    'exit_p': current_bid,
+                    'return': roi,
+                    'exit_reason': 'EOD Timeout',
+                    'outcome': 'WIN' if roi > 0 else 'LOSS'
+                })
+                positions.remove(pos)
+        
+        # --- ENTRY LOGICA ---
+        if cooldown > 0: cooldown -= 1
+        
+        # Check Filters
+        valid_range = (row['range_so_far'] / current_ask) > MIN_RANGE_PCT
+        
+        if (len(positions) < MAX_SLOTS) and (cooldown == 0) and \
+           (row['time_str'] < '20:00') and valid_range:
+            
+            # Check staat tegenover het DAGELIJKSE rulebook
+            current_state = (row['prev_day_trend'], row['pos_bin'], row['rsi_bin'], row['hour'])
+            
+            if current_state in daily_rules_set:
+                target_gain = row['range_so_far'] * TARGET_RANGE_RATIO
+                effective_investment = SLOT_SIZE_CASH * LEVERAGE
+                units = effective_investment / current_ask
+                
+                positions.append({
+                    'entry_time': current_time,
+                    'entry_price': current_ask,
+                    'target_price': current_ask + target_gain,
+                    'units': units
+                })
+                cooldown = COOLDOWN_MINUTES
+
+
+# D. Opslaan
+if all_new_trades:
+    new_trades_df = pd.DataFrame(all_new_trades)
+    print(f"Totaal nieuwe trades gegenereerd: {len(new_trades_df)}")
     
     if not existing_logs.empty:
         final_df = pd.concat([existing_logs, new_trades_df], ignore_index=True)
@@ -267,6 +301,6 @@ if new_trades:
     final_df.to_csv(log_path, index=False)
     print(f"Log bijgewerkt: {log_path}")
 else:
-    print("Geen nieuwe trades.")
+    print("Geen trades gemaakt in de verwerkte dagen.")
 
 print("--- RUN VOLTOOID ---")
