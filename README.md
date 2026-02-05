@@ -23,8 +23,8 @@ Het model kijkt naar 4 variabelen (De Context):
 
 ## 📂 Projectstructuur
 
-- **`main.py`** (of jouw scriptnaam): Het hoofdscript. Haalt data op, draait de rolling window simulatie en logt trades.
-- **`equity_plot.py`**: Visualiseert de resultaten en berekent de compounding curve.
+- **`new_strategy.py`**: Het hoofdscript. Haalt data op, draait de rolling window simulatie en logt trades.
+- **`generate_plots.py`**: Visualiseert de resultaten en berekent de compounding curve.
 - **`OIL_CRUDE/`**: Map waarin ruwe data wordt opgeslagen.
 - **`OIL_CRUDE/Trading_details/trading_logs.csv`**: Het logboek met alle trades (Entry, Exit, P&L, Reden).
 
@@ -38,7 +38,7 @@ Het model kijkt naar 4 variabelen (De Context):
 
 ## 🔄 Workflow Diagram
 
-Hieronder de logica van het `main.py` script:
+Hieronder de logica van het `new_strategy.py` script:
 
 ```mermaid
 graph TD
