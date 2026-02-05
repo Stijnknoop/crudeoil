@@ -19,7 +19,7 @@ LOG_FILE = "trading_logs.csv"
 # Account Settings
 START_CAPITAL = 10000.0
 MAX_SLOTS = 10
-LEVERAGE = 10  # Hefboom voor jouw strategie (niet voor de olieprijs!)
+LEVERAGE = 1  # Hefboom voor jouw strategie (niet voor de olieprijs!)
 
 # ==============================================================================
 # 2. DATA FUNCTIES
