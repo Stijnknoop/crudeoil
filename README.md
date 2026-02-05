@@ -42,39 +42,39 @@ Hieronder de logica van het `new_strategy.py` script:
 
 ```mermaid
 graph TD
-    A[Start Script] --> B{Lees trading_logs.csv};
-    B -- Bestaat --> C[Bepaal laatste verwerkte datum];
-    B -- Bestaat niet --> D[Start bij dag 40];
-    C & D --> E[Haal nieuwe Data op van GitHub];
+    A[Start Script] --> B{"Lees trading_logs.csv"}
+    B -- Bestaat --> C[Bepaal laatste verwerkte datum]
+    B -- Bestaat niet --> D[Start bij dag 40]
+    C & D --> E[Haal nieuwe Data op van GitHub]
     
-    E --> F{Zijn er nieuwe dagen?};
-    F -- Nee --> G[Stop Script];
-    F -- Ja --> H[Start Rolling Window Loop];
+    E --> F{"Zijn er nieuwe dagen?"}
+    F -- Nee --> G[Stop Script]
+    F -- Ja --> H[Start Rolling Window Loop]
     
     subgraph "Dagelijkse Her-Kalibratie"
-        H --> I[Definieer Window: Dag T-40 t/m T-1];
-        I --> J[Bereken ROI per Markt-Conditie];
-        J --> K{Is ROI > Drempel? (bv 0.25%)};
-        K -- Ja --> L[Voeg toe aan 'Daily Rulebook'];
-        K -- Nee --> M[Negeer Conditie];
+        H --> I[Definieer Window: Dag T-40 t/m T-1]
+        I --> J[Bereken ROI per Markt-Conditie]
+        J --> K{"Is ROI > Drempel? (bv 0.25%)"}
+        K -- Ja --> L[Voeg toe aan 'Daily Rulebook']
+        K -- Nee --> M[Negeer Conditie]
     end
     
-    L --> N[Simuleer Huidige Dag (T)];
+    L --> N[Simuleer Huidige Dag T]
     
     subgraph "Intraday Executie"
-        N --> O[Check Huidige Context (RSI, Positie, Tijd)];
-        O --> P{Staat Context in Rulebook?};
-        P -- Ja --> Q{Zijn er Slots vrij?};
-        Q -- Ja --> R[KOOP (10% van Equity * Leverage)];
+        N --> O[Check Huidige Context RSI, Positie, Tijd]
+        O --> P{"Staat Context in Rulebook?"}
+        P -- Ja --> Q{"Zijn er Slots vrij?"}
+        Q -- Ja --> R[KOOP 10% van Equity * Leverage]
         
-        R --> S[Manage Positie];
-        S --> T{Exit Signaal?};
-        T -- Target Hit --> U[Winst Pakken];
-        T -- 22:00 Uur --> V[Force Close (Time-out)];
+        R --> S[Manage Positie]
+        S --> T{"Exit Signaal?"}
+        T -- Target Hit --> U[Winst Pakken]
+        T -- 22:00 Uur --> V[Force Close Time-out]
     end
     
-    U & V --> W[Sla Trade op in Lijst];
-    W --> H;
+    U & V --> W[Sla Trade op in Lijst]
+    W --> H
     
-    H -- Alle dagen klaar --> X[Update trading_logs.csv];
-    X --> Y[Einde];
+    H -- Alle dagen klaar --> X[Update trading_logs.csv]
+    X --> Y[Einde]
