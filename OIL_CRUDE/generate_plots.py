@@ -171,7 +171,7 @@ def generate_performance_plots():
         ax1.fill_between(df_equity['time'], START_CAPITAL, df_equity['equity'], color='#00CC00', alpha=0.1)
 
     # Opmaak
-    ax1.set_title(f"Eerlijke Vergelijking: Wat is je €{START_CAPITAL:.0f} nu waard?", fontsize=14, fontweight='bold')
+    ax1.set_title(f" Equity curve | leverage: 10x ?", fontsize=14, fontweight='bold')
     ax1.set_ylabel("Portfolio Waarde (€)", fontsize=12)
     ax1.axhline(START_CAPITAL, color='black', linewidth=1.5, linestyle='-')
     
@@ -183,7 +183,7 @@ def generate_performance_plots():
     
     fig.autofmt_xdate()
     
-    save_path = os.path.join(PLOT_DIR, "equity_linear_comparison.png")
+    save_path = os.path.join(OUTPUT_DIR, "equity_linear_comparison.png")        # Laat dit in OUTPUR_DIR ik wil de daily plots in de plots map 
     plt.savefig(save_path, bbox_inches='tight', dpi=150)
     print(f"Grafiek opgeslagen: {save_path}")
     plt.close()
