@@ -14,13 +14,13 @@ OUTPUT_DIR = "OIL_CRUDE/Trading_details"
 LOG_FILE = "trading_logs.csv"
 
 # --- BACKTEST WINDOW ---
-ROLLING_WINDOW_DAYS = 40     # Aantal dagen historie om op te trainen
+ROLLING_WINDOW_DAYS = 40      # Aantal dagen historie om op te trainen
 
 # --- ACCOUNT & RISK ---
-START_CAPITAL = 10000
+START_CAPITAL = 1200          # AANGEPAST: Startkapitaal naar 1200
 MAX_SLOTS = 10
-LEVERAGE = 5
-# LET OP: SLOT_SIZE_CASH is nu dynamisch en wordt in de loop berekend!
+LEVERAGE = 10
+# LET OP: SLOT_SIZE_CASH is dynamisch
 COOLDOWN_MINUTES = 10
 
 # --- STRATEGIE FILTERS (DYNAMISCH) ---
@@ -155,19 +155,16 @@ if os.path.exists(log_path):
         print(f"Laatst verwerkte datum in logs: {last_log_date}")
         
         # --- BEREKEN HUIDIG KAPITAAL OP BASIS VAN HISTORIE ---
-        # Als we al kolommen 'profit_abs' hebben, gebruiken we die.
-        # Zo niet (oude CSV), dan schatten we het op basis van de oude statische logica.
         if 'profit_abs' in existing_logs.columns:
             total_profit = existing_logs['profit_abs'].sum()
             current_capital = START_CAPITAL + total_profit
             print(f"Historie gedetecteerd. Kapitaal bijgewerkt naar: €{current_capital:.2f}")
         else:
-            # Fallback voor oude logs zonder absolute profit data
-            # We nemen aan dat oude trades statisch waren (Start / 10)
+            # Fallback voor oude logs
             static_invest = START_CAPITAL / MAX_SLOTS
             estimated_profit = (existing_logs['return'] * static_invest * LEVERAGE).sum()
             current_capital = START_CAPITAL + estimated_profit
-            print(f"Oude logs gedetecteerd (geen cash data). Geschat kapitaal: €{current_capital:.2f}")
+            print(f"Oude logs gedetecteerd. Geschat kapitaal: €{current_capital:.2f}")
 
         # Start datum bepalen
         try:
@@ -241,8 +238,7 @@ for target_day in days_to_process:
             close_trade = False
             exit_reason = ""
             exit_price = 0.0
-            outcome = ""
-
+            
             # Target Hit?
             if row['high_bid'] >= pos['target_price']:
                 exit_price = pos['target_price']
@@ -256,19 +252,15 @@ for target_day in days_to_process:
                 close_trade = True
 
             if close_trade:
+                # Bereken ROI
                 roi = (exit_price - pos['entry_price']) / pos['entry_price']
                 
-                # BEREKEN CASH RESULTAAT (Winst/Verlies * Units)
-                # Units = (Cash Inleg * Leverage) / Entry Price
-                # Dus Cash Winst = (Units * Exit Price) - (Units * Entry Price)
-                # Of simpeler: Invested_Cash * Leverage * ROI
-                
-                # Omdat we met CFD/Futures logica werken, berekenen we het via de units:
+                # BEREKEN CASH RESULTAAT (Whole Units)
                 exit_value = pos['units'] * exit_price
                 entry_value = pos['units'] * pos['entry_price']
                 gross_profit_abs = exit_value - entry_value
                 
-                # UPDATE HET KAPITAAL DIRECT (COMPOUNDING)
+                # UPDATE HET KAPITAAL DIRECT
                 current_capital += gross_profit_abs
                 
                 all_new_trades.append({
@@ -277,11 +269,12 @@ for target_day in days_to_process:
                     'entry_p': pos['entry_price'],
                     'side': 'Long',
                     'leverage': LEVERAGE,
-                    'invested_cash': pos['invested_cash'],  # Opslaan voor analyse
+                    'units': pos['units'],            # AANGEPAST: Log het aantal vaten
+                    'invested_cash': pos['invested_cash'], 
                     'exit_time': current_time,
                     'exit_p': exit_price,
                     'return': roi,
-                    'profit_abs': gross_profit_abs,         # Opslaan voor balans berekening
+                    'profit_abs': gross_profit_abs,
                     'exit_reason': exit_reason,
                     'outcome': 'WIN' if roi > 0 else 'LOSS'
                 })
@@ -301,14 +294,18 @@ for target_day in days_to_process:
                 target_gain = row['range_so_far'] * TARGET_RANGE_RATIO
                 
                 # --- DYNAMISCHE POSITIE GROOTTE ---
-                # 1/10e van het HUIDIGE kapitaal
                 dynamic_slot_size = current_capital / MAX_SLOTS
                 
-                # Totale koopkracht voor deze trade
+                # Totale koopkracht
                 effective_investment = dynamic_slot_size * LEVERAGE
                 
-                # Aantal units (vaten) dat we kunnen kopen
-                units = effective_investment / current_ask
+                # AANGEPAST: Aantal units (vaten) moet een geheel getal zijn
+                # We ronden af naar beneden (int)
+                units = int(effective_investment / current_ask)
+                
+                # AANGEPAST: Als we geen heel vat kunnen kopen, slaan we de trade over
+                if units < 1:
+                    continue
                 
                 positions.append({
                     'entry_time': current_time,
@@ -326,11 +323,13 @@ if all_new_trades:
     print(f"Totaal nieuwe trades gegenereerd: {len(new_trades_df)}")
     
     if not existing_logs.empty:
-        # Zorg dat de kolommen matchen (vul lege kolommen in oude logs op indien nodig)
+        # Zorg dat de kolommen matchen
         if 'invested_cash' not in existing_logs.columns:
             existing_logs['invested_cash'] = np.nan
         if 'profit_abs' not in existing_logs.columns:
             existing_logs['profit_abs'] = np.nan
+        if 'units' not in existing_logs.columns:
+            existing_logs['units'] = np.nan
             
         final_df = pd.concat([existing_logs, new_trades_df], ignore_index=True)
     else:
