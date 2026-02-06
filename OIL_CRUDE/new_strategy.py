@@ -17,7 +17,7 @@ LOG_FILE = "trading_logs.csv"
 ROLLING_WINDOW_DAYS = 40      # Aantal dagen historie om op te trainen
 
 # --- ACCOUNT & RISK ---
-START_CAPITAL = 1200          # Startkapitaal
+START_CAPITAL = 65          # Startkapitaal
 MAX_SLOTS = 10
 LEVERAGE = 10
 COOLDOWN_MINUTES = 10
