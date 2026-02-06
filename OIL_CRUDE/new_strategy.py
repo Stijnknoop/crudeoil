@@ -143,7 +143,7 @@ df_raw = read_latest_csv_from_github()
 if df_raw is None: exit()
 df = prepare_data(df_raw)
 
-# B. Bepaal historie en startbalans
+# B. Bepaal historie en startbalans (UPDATE LOGICA HIERONDER AANGEPAST)
 unique_dates = sorted(df['date'].unique())
 current_capital = START_CAPITAL
 
@@ -152,30 +152,54 @@ if os.path.exists(log_path):
     if not existing_logs.empty:
         existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'])
         last_log_date = existing_logs['entry_time'].max().date()
+        last_data_date = df['date'].max()
+
         print(f"Laatst verwerkte datum in logs: {last_log_date}")
+        print(f"Laatste datum in dataset: {last_data_date}")
         
-        # --- BEREKEN HUIDIG KAPITAAL OP BASIS VAN HISTORIE ---
-        if 'profit_abs' in existing_logs.columns:
+        # --- UPDATE MECHANISME ---
+        # Als de log datum gelijk is aan de laatste data datum, betekent dit
+        # dat we deze dag opnieuw moeten simuleren voor nieuwe middag-trades.
+        if last_log_date == last_data_date:
+            print(f"⚠️  Dag {last_log_date} is nog actief. We herberekenen deze dag.")
+            
+            # 1. Gooi trades van VANDAAG uit het geheugen (om dubbele te voorkomen)
+            existing_logs = existing_logs[existing_logs['entry_time'].dt.date < last_log_date]
+            
+            # 2. Start index is vandaag (dus GEEN +1)
+            try:
+                start_index = unique_dates.index(last_log_date)
+            except ValueError:
+                start_index = ROLLING_WINDOW_DAYS
+        else:
+            # 3. Normaal: Ga verder bij morgen
+            try:
+                start_index = unique_dates.index(last_log_date) + 1
+            except ValueError:
+                future_dates = [d for d in unique_dates if d > last_log_date]
+                if not future_dates:
+                    start_index = len(unique_dates) # Niets te doen
+                else:
+                    start_index = unique_dates.index(future_dates[0])
+
+        # --- BEREKEN HUIDIG KAPITAAL OP BASIS VAN (GEFILTERDE) HISTORIE ---
+        if 'profit_abs' in existing_logs.columns and not existing_logs.empty:
             total_profit = existing_logs['profit_abs'].sum()
             current_capital = START_CAPITAL + total_profit
-            print(f"Historie gedetecteerd. Kapitaal bijgewerkt naar: €{current_capital:.2f}")
+            print(f"Historie bijgewerkt. Startkapitaal voor loop: €{current_capital:.2f}")
         else:
-            # Fallback voor oude logs
-            static_invest = START_CAPITAL / MAX_SLOTS
-            estimated_profit = (existing_logs['return'] * static_invest * LEVERAGE).sum()
-            current_capital = START_CAPITAL + estimated_profit
-            print(f"Oude logs gedetecteerd. Geschat kapitaal: €{current_capital:.2f}")
+            # Fallback of start van dag 1
+            if 'return' in existing_logs.columns and not existing_logs.empty:
+                # Oude log support
+                static_invest = START_CAPITAL / MAX_SLOTS
+                estimated_profit = (existing_logs['return'] * static_invest * LEVERAGE).sum()
+                current_capital = START_CAPITAL + estimated_profit
+            else:
+                current_capital = START_CAPITAL
+            print(f"Geen recente trades (of dag reset). Kapitaal: €{current_capital:.2f}")
 
-        # Start datum bepalen
-        try:
-            start_index = unique_dates.index(last_log_date) + 1
-        except ValueError:
-            future_dates = [d for d in unique_dates if d > last_log_date]
-            if not future_dates:
-                print("Alles is al bijgewerkt.")
-                exit()
-            start_index = unique_dates.index(future_dates[0])
     else:
+        existing_logs = pd.DataFrame()
         start_index = ROLLING_WINDOW_DAYS
 else:
     existing_logs = pd.DataFrame()
@@ -193,7 +217,7 @@ if not days_to_process:
     print("Geen nieuwe dagen om te verwerken.")
     exit()
 
-print(f"Gevonden nieuwe dagen: {len(days_to_process)}")
+print(f"Gevonden dagen om te verwerken: {len(days_to_process)}")
 print(f"Start Kapitaal voor deze run: €{current_capital:.2f}")
 
 # C. De Grote Loop
@@ -331,6 +355,8 @@ if all_new_trades:
         if 'units' not in existing_logs.columns:
             existing_logs['units'] = np.nan
             
+        # Omdat we 'existing_logs' eerder hebben gefilterd (trades van vandaag eruit gehaald),
+        # kunnen we nu veilig concateneren.
         final_df = pd.concat([existing_logs, new_trades_df], ignore_index=True)
     else:
         final_df = new_trades_df
