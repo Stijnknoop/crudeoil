@@ -17,7 +17,7 @@ PLOT_DIR = os.path.join(OUTPUT_DIR, "plots")
 LOG_FILE = "trading_logs.csv"
 
 # Account Settings
-START_CAPITAL = 10000.0
+START_CAPITAL = 65.0
 MAX_SLOTS = 10
 
 # ==============================================================================
