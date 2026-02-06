@@ -17,10 +17,9 @@ LOG_FILE = "trading_logs.csv"
 ROLLING_WINDOW_DAYS = 40      # Aantal dagen historie om op te trainen
 
 # --- ACCOUNT & RISK ---
-START_CAPITAL = 1200          # AANGEPAST: Startkapitaal naar 1200
+START_CAPITAL = 1200          # Startkapitaal
 MAX_SLOTS = 10
 LEVERAGE = 10
-# LET OP: SLOT_SIZE_CASH is dynamisch
 COOLDOWN_MINUTES = 10
 
 # --- STRATEGIE FILTERS (DYNAMISCH) ---
@@ -98,9 +97,6 @@ def prepare_data(df):
 # 3. DE TRAINER (OP EEN SPECIFIEKE SLICE DATA)
 # ==============================================================================
 def train_on_window(train_df):
-    """
-    Berekent de winstgevende regels op basis van de meegegeven 'train_df' (de window).
-    """
     entry = train_df['close_ask']
     target_dist = train_df['range_so_far'] * TARGET_RANGE_RATIO
     eod_close = train_df.groupby('date')['close_bid'].transform('last')
@@ -147,12 +143,18 @@ df = prepare_data(df_raw)
 unique_dates = sorted(df['date'].unique())
 current_capital = START_CAPITAL
 
+# We gebruiken een fallback datum voor als er geen logs zijn
+last_log_time = pd.Timestamp("1900-01-01")
+
 if os.path.exists(log_path):
     existing_logs = pd.read_csv(log_path)
     if not existing_logs.empty:
         existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'])
-        last_log_date = existing_logs['entry_time'].max().date()
-        print(f"Laatst verwerkte datum in logs: {last_log_date}")
+        
+        # AANGEPAST: We onthouden het exacte tijdstip van de laatste trade
+        last_log_time = existing_logs['entry_time'].max()
+        last_log_date = last_log_time.date()
+        print(f"Laatst verwerkte tijdstip in logs: {last_log_time}")
         
         # --- BEREKEN HUIDIG KAPITAAL OP BASIS VAN HISTORIE ---
         if 'profit_abs' in existing_logs.columns:
@@ -168,13 +170,21 @@ if os.path.exists(log_path):
 
         # Start datum bepalen
         try:
-            start_index = unique_dates.index(last_log_date) + 1
+            # AANGEPAST: We halen de '+ 1' weg zodat hij de huidige dag opnieuw bekijkt voor nieuwe uren
+            start_index = unique_dates.index(last_log_date)
         except ValueError:
             future_dates = [d for d in unique_dates if d > last_log_date]
             if not future_dates:
-                print("Alles is al bijgewerkt.")
-                exit()
-            start_index = unique_dates.index(future_dates[0])
+                # Check of er intraday nieuwe data is op de laatste dag
+                last_data_timestamp = df['time'].max()
+                if last_data_timestamp <= last_log_time:
+                    print("Alles is al bijgewerkt (Geen nieuwe data).")
+                    exit()
+                else:
+                     # Er is wel nieuwe data op dezelfde dag
+                     start_index = unique_dates.index(last_log_date)
+            else:
+                start_index = unique_dates.index(future_dates[0])
     else:
         start_index = ROLLING_WINDOW_DAYS
 else:
@@ -193,7 +203,7 @@ if not days_to_process:
     print("Geen nieuwe dagen om te verwerken.")
     exit()
 
-print(f"Gevonden nieuwe dagen: {len(days_to_process)}")
+print(f"Gevonden dagen om te verwerken: {len(days_to_process)}")
 print(f"Start Kapitaal voor deze run: €{current_capital:.2f}")
 
 # C. De Grote Loop
@@ -206,7 +216,7 @@ for target_day in days_to_process:
     train_start_date = unique_dates[target_idx - ROLLING_WINDOW_DAYS]
     train_end_date = unique_dates[target_idx - 1]
     
-    print(f"Processing {target_day} | Saldo: €{current_capital:.2f} | Training: {train_start_date} t/m {train_end_date}")
+    print(f"Processing {target_day} | Saldo: €{current_capital:.2f}")
     
     # Slice Data
     mask_train = (df['date'] >= train_start_date) & (df['date'] <= train_end_date)
@@ -229,6 +239,10 @@ for target_day in days_to_process:
     cooldown = 0
     
     for i, row in test_df.iterrows():
+        # AANGEPAST: Sla rijen over die al verwerkt zijn (Intraday update logic)
+        if row['time'] <= last_log_time:
+            continue
+
         current_time = row['time']
         current_bid = row['close_bid']
         current_ask = row['close_ask']
@@ -269,7 +283,7 @@ for target_day in days_to_process:
                     'entry_p': pos['entry_price'],
                     'side': 'Long',
                     'leverage': LEVERAGE,
-                    'units': pos['units'],            # AANGEPAST: Log het aantal vaten
+                    'units': pos['units'],            
                     'invested_cash': pos['invested_cash'], 
                     'exit_time': current_time,
                     'exit_p': exit_price,
@@ -299,11 +313,10 @@ for target_day in days_to_process:
                 # Totale koopkracht
                 effective_investment = dynamic_slot_size * LEVERAGE
                 
-                # AANGEPAST: Aantal units (vaten) moet een geheel getal zijn
-                # We ronden af naar beneden (int)
+                # Aantal units (vaten) moet een geheel getal zijn
                 units = int(effective_investment / current_ask)
                 
-                # AANGEPAST: Als we geen heel vat kunnen kopen, slaan we de trade over
+                # Als we geen heel vat kunnen kopen, slaan we de trade over
                 if units < 1:
                     continue
                 
@@ -342,6 +355,7 @@ if all_new_trades:
     print(f"Log bijgewerkt: {log_path}")
     print(f"Nieuw Eindsaldo: €{current_capital:.2f}")
 else:
-    print("Geen trades gemaakt in de verwerkte dagen.")
+    print("Geen nieuwe trades gemaakt in de verwerkte uren.")
 
 print("--- RUN VOLTOOID ---")
+
