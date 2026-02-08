@@ -154,18 +154,25 @@ valid_sessions = sorted(df['session_id'].unique())
 current_capital = START_CAPITAL
 last_log_time = pd.Timestamp("1900-01-01")
 
+# --- FIX: Eerst lege DataFrame aanmaken om NameError te voorkomen ---
+existing_logs = pd.DataFrame() 
+
 if os.path.exists(log_path):
-    existing_logs = pd.read_csv(log_path)
-    if not existing_logs.empty:
-        existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'])
-        last_log_time = existing_logs['entry_time'].max()
-        print(f"Laatst verwerkte tijdstip: {last_log_time}")
-        
-        # Bereken kapitaal uit logs
-        if 'profit_abs' in existing_logs.columns:
-            total_profit = existing_logs['profit_abs'].sum()
-            current_capital = START_CAPITAL + total_profit
-            print(f"Historie gedetecteerd. Huidig Kapitaal: €{current_capital:.2f}")
+    try:
+        existing_logs = pd.read_csv(log_path)
+        if not existing_logs.empty:
+            existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'])
+            last_log_time = existing_logs['entry_time'].max()
+            print(f"Laatst verwerkte tijdstip: {last_log_time}")
+            
+            # Bereken kapitaal uit logs
+            if 'profit_abs' in existing_logs.columns:
+                total_profit = existing_logs['profit_abs'].sum()
+                current_capital = START_CAPITAL + total_profit
+                print(f"Historie gedetecteerd. Huidig Kapitaal: €{current_capital:.2f}")
+    except Exception as e:
+        print(f"Fout bij lezen logbestand: {e}. We beginnen vers.")
+        existing_logs = pd.DataFrame()
 
 # C. Bepaal welke sessies we moeten verwerken
 # We zoeken de sessie ID die bij de last_log_time hoort, en pakken alles daarna
@@ -310,6 +317,7 @@ if all_new_trades:
     new_trades_df = pd.DataFrame(all_new_trades)
     print(f"Nieuwe trades gemaakt: {len(new_trades_df)}")
     
+    # Check of existing_logs leeg is of niet, nu veilig omdat hij altijd defined is
     if not existing_logs.empty:
         # Zorg voor gelijke kolommen
         for col in new_trades_df.columns:
