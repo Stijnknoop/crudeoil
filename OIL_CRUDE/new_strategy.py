@@ -145,7 +145,7 @@ if os.path.exists(log_path):
             existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'])
             last_log_time = existing_logs['entry_time'].max()
             
-            # Kolomnaam check voor backwards compatibility
+            # Kolomnaam check
             profit_col = 'Profit_Euro' if 'Profit_Euro' in existing_logs.columns else 'profit_abs'
             if profit_col in existing_logs.columns:
                 total_profit = existing_logs[profit_col].sum()
@@ -219,20 +219,22 @@ for i, target_sess_id in enumerate(sessions_to_process):
                 
             if close_trade:
                 profit_abs = (exit_price - pos['entry_price']) * pos['units']
-                roi = profit_abs / pos['margin_used'] # ROI op basis van daadwerkelijke inleg
+                roi = profit_abs / pos['margin_used']
                 
-                current_capital += profit_abs
+                # --- BELANGRIJKE FIX: AFRONDEN VOORDAT HET KAPITAAL WORDT GEUPDATE ---
+                # Dit zorgt ervoor dat het geheugen matcht met de CSV (die ook afrondt)
+                current_capital += round(profit_abs, 2)
                 
                 all_new_trades.append({
                     'Entry_Time': pos['entry_time'],
                     'Entry_Price': round(pos['entry_price'], 3),
                     'Side': 'Long',
                     'Units': pos['units'],
-                    'Margin_Used': round(pos['margin_used'], 2), # De ECHTE kosten
+                    'Margin_Used': round(pos['margin_used'], 2),
                     'Exit_Time': curr_time,
                     'Exit_Price': round(exit_price, 3),
                     'ROI_Pct': round(roi * 100, 2),
-                    'Profit_Euro': round(profit_abs, 2), # Winst in keiharde euro's
+                    'Profit_Euro': round(profit_abs, 2),
                     'Exit_Reason': exit_reason,
                     'Session_ID': target_sess_id
                 })
@@ -249,12 +251,10 @@ for i, target_sess_id in enumerate(sessions_to_process):
             ask = row['close_ask']
             target = ask + (row['sess_range'] * TARGET_RANGE_RATIO)
             
-            # Berekening
             slot_cash = current_capital / MAX_SLOTS
             buying_power = slot_cash * LEVERAGE
             units = int(buying_power / ask)
             
-            # Wat kost dit margin daadwerkelijk?
             margin_required = (units * ask) / LEVERAGE
             
             if units >= 1:
@@ -263,7 +263,7 @@ for i, target_sess_id in enumerate(sessions_to_process):
                     'entry_price': ask,
                     'target_price': target,
                     'units': units,
-                    'margin_used': margin_required # Opslaan voor de log
+                    'margin_used': margin_required
                 })
                 cooldown = COOLDOWN_MINUTES
 
@@ -273,8 +273,7 @@ if all_new_trades:
     print(f"Nieuwe trades gemaakt: {len(new_trades_df)}")
     
     if not existing_logs.empty:
-        # Check of kolomnamen gematcht moeten worden (van oude layout naar nieuwe)
-        # We mappen oude namen naar nieuwe als ze bestaan
+        # Check of kolomnamen gematcht moeten worden
         rename_map = {
             'entry_time': 'Entry_Time', 'entry_p': 'Entry_Price', 'units': 'Units',
             'invested_cash': 'Margin_Used', 'exit_time': 'Exit_Time', 'exit_p': 'Exit_Price',
@@ -283,7 +282,6 @@ if all_new_trades:
         }
         existing_logs.rename(columns=rename_map, inplace=True)
         
-        # Zorg dat alle kolommen bestaan
         for col in new_trades_df.columns:
             if col not in existing_logs.columns: existing_logs[col] = np.nan
             
