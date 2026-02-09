@@ -23,15 +23,16 @@ LEVERAGE = 10
 COOLDOWN_MINUTES = 10
 
 # --- STRATEGIE FILTERS ---
-MIN_HISTORICAL_TRADES = 15       
+MIN_HISTORICAL_TRADES = 15        
 MIN_EXPECTED_ROI = 0.0025        
-MIN_RANGE = 0.0008               
-TARGET_RANGE_RATIO = 0.5         
+MIN_RANGE = 0.0008                
+TARGET_RANGE_RATIO = 0.5          
 
 # ==============================================================================
 # 2. DATA OPHALEN & VERWERKEN
 # ==============================================================================
 def get_data_and_process():
+    print("--- Data ophalen... ---")
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
     api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{FOLDER_PATH}?ref=master"
@@ -71,6 +72,7 @@ def get_data_and_process():
         return None
 
 def add_features(df):
+    """Voegt indicatoren toe, INCLUSIEF KWARTIEREN."""
     df = df.copy()
     
     delta = df['close_bid'].diff()
@@ -93,18 +95,20 @@ def add_features(df):
     
     df['rsi_bin'] = pd.cut(df['rsi'], bins=[0, 30, 70, 100], labels=['Oversold', 'Neutraal', 'Overbought'])
     df['pos_bin'] = pd.cut(df['pos_pct'], bins=[-0.1, 0.3, 0.7, 1.1], labels=['Low', 'Mid', 'High'])
-    df['hour'] = df['time'].dt.hour
+    
+    # --- NIEUWE LOGICA: KWARTIER BEREKENING ---
+    df['quarter_hour'] = (df['time'].dt.hour * 4) + (df['time'].dt.minute // 15)
     
     return df
 
 # ==============================================================================
-# 3. TRAINING LOGICA
+# 3. TRAINING LOGICA (KWARTIER BASIS)
 # ==============================================================================
 def train_rules(train_df):
     entry = train_df['close_ask']
     target_dist = train_df['sess_range'] * TARGET_RANGE_RATIO
     
-    # Time Travel Fix
+    # Time Travel Fix (Kijk naar max price in de toekomst van die sessie)
     max_future = train_df.iloc[::-1].groupby('session_id')['close_bid'].cummax().iloc[::-1]
     is_win = (max_future >= (entry + target_dist)) & (train_df['range_pct'] > MIN_RANGE)
     
@@ -113,7 +117,8 @@ def train_rules(train_df):
     
     train_df = train_df.assign(roi = pnl / entry)
     
-    stats = train_df.groupby(['prev_trend', 'pos_bin', 'rsi_bin', 'hour'], observed=True)['roi'].agg(['mean', 'count'])
+    # --- UPDATE: GROEPEREN OP QUARTER_HOUR ---
+    stats = train_df.groupby(['prev_trend', 'pos_bin', 'rsi_bin', 'quarter_hour'], observed=True)['roi'].agg(['mean', 'count'])
     winning = stats[(stats['count'] >= MIN_HISTORICAL_TRADES) & (stats['mean'] > MIN_EXPECTED_ROI)]
     
     return set(winning.index.tolist())
@@ -121,7 +126,7 @@ def train_rules(train_df):
 # ==============================================================================
 # 4. HOOFDPROGRAMMA
 # ==============================================================================
-print(f"--- START GITHUB TRADING BOT ({ROLLING_WINDOW_SESSIONS} SESSIES) ---")
+print(f"--- START GITHUB TRADING BOT ({ROLLING_WINDOW_SESSIONS} SESSIES - KWARTIER STRATEGIE) ---")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 log_path = os.path.join(OUTPUT_DIR, LOG_FILE)
@@ -142,8 +147,8 @@ if os.path.exists(log_path):
     try:
         existing_logs = pd.read_csv(log_path)
         if not existing_logs.empty:
-            existing_logs['entry_time'] = pd.to_datetime(existing_logs['entry_time'])
-            last_log_time = existing_logs['entry_time'].max()
+            existing_logs['Entry_Time'] = pd.to_datetime(existing_logs['Entry_Time'])
+            last_log_time = existing_logs['Entry_Time'].max()
             
             # Kolomnaam check
             profit_col = 'Profit_Euro' if 'Profit_Euro' in existing_logs.columns else 'profit_abs'
@@ -221,8 +226,7 @@ for i, target_sess_id in enumerate(sessions_to_process):
                 profit_abs = (exit_price - pos['entry_price']) * pos['units']
                 roi = profit_abs / pos['margin_used']
                 
-                # --- BELANGRIJKE FIX: AFRONDEN VOORDAT HET KAPITAAL WORDT GEUPDATE ---
-                # Dit zorgt ervoor dat het geheugen matcht met de CSV (die ook afrondt)
+                # Afronden
                 current_capital += round(profit_abs, 2)
                 
                 all_new_trades.append({
@@ -242,8 +246,10 @@ for i, target_sess_id in enumerate(sessions_to_process):
         
         # --- ENTRIES ---
         if cooldown > 0: cooldown -= 1
+        
+        # >> UPDATE: Check op quarter_hour ipv hour <<
         valid_rng = row['range_pct'] > MIN_RANGE
-        state = (row['prev_trend'], row['pos_bin'], row['rsi_bin'], row['hour'])
+        state = (row['prev_trend'], row['pos_bin'], row['rsi_bin'], row['quarter_hour'])
         
         if (state in rules) and valid_rng and (len(positions) < MAX_SLOTS) and \
            (cooldown == 0) and (row['time'].hour < 20):
@@ -273,15 +279,7 @@ if all_new_trades:
     print(f"Nieuwe trades gemaakt: {len(new_trades_df)}")
     
     if not existing_logs.empty:
-        # Check of kolomnamen gematcht moeten worden
-        rename_map = {
-            'entry_time': 'Entry_Time', 'entry_p': 'Entry_Price', 'units': 'Units',
-            'invested_cash': 'Margin_Used', 'exit_time': 'Exit_Time', 'exit_p': 'Exit_Price',
-            'return': 'ROI_Pct', 'profit_abs': 'Profit_Euro', 'exit_reason': 'Exit_Reason',
-            'session_id': 'Session_ID'
-        }
-        existing_logs.rename(columns=rename_map, inplace=True)
-        
+        # Zorg dat de kolommen matchen
         for col in new_trades_df.columns:
             if col not in existing_logs.columns: existing_logs[col] = np.nan
             
