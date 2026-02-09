@@ -23,7 +23,7 @@ os.makedirs(PLOT_DIR, exist_ok=True)
 
 # Instellingen (Moeten matchen met backtest_runner.py)
 ROLLING_WINDOW_SIZE = 40
-START_CAPITAL = 650.0
+START_CAPITAL = 1000.0
 
 CONFIG = {
     'target_range_ratio': 0.5,
