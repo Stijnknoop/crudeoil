@@ -6,6 +6,7 @@ import matplotlib
 # Belangrijk voor GitHub Actions (geen scherm):
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates # Toegevoegd voor datum opmaak
 
 # ==============================================================================
 # 1. CONFIGURATIE
@@ -43,12 +44,10 @@ def get_data_and_process():
 
     try:
         r = requests.get(api_url, headers=headers).json()
-        # Zoek csv files, pak de eerste
         if isinstance(r, list):
             csv_file = next(f for f in r if f['name'].endswith('.csv'))
             download_url = csv_file['download_url']
         else:
-            # Fallback als de API direct het file object geeft
             download_url = r['download_url']
             
         df = pd.read_csv(download_url)
@@ -117,8 +116,6 @@ def add_features(df):
 def train_rules(train_df, cfg):
     entry = train_df['close_ask']
     target_dist = train_df['sess_range'] * cfg['target_range_ratio']
-    
-    # Let op: iloc[::-1] truc voor future max
     max_future = train_df.iloc[::-1].groupby('session_id')['close_bid'].cummax().iloc[::-1]
 
     is_win = (max_future >= (entry + target_dist)) & (train_df['range_pct'] > cfg['min_range'])
@@ -145,9 +142,8 @@ def run_simulation():
 
     current_capital = START_CAPITAL
     capital_history = [START_CAPITAL]
-    session_indices = []
+    session_dates = [] # NIEUW: Lijst voor datums
     
-    # === NIEUW: Logboek ===
     action_log = [] 
 
     print(f"\n--- START SIMULATIE ---")
@@ -164,6 +160,13 @@ def run_simulation():
         train_df = proc_df[proc_df['session_id'] < target_session_id]
         target_df = proc_df[proc_df['session_id'] == target_session_id].copy().reset_index(drop=True)
 
+        # NIEUW: Vang de datum van deze sessie
+        if not target_df.empty:
+            session_dates.append(target_df['time'].iloc[0])
+        else:
+            # Fallback voor het geval een sessie leeg is (zou niet moeten gebeuren)
+            session_dates.append(pd.Timestamp.now())
+
         rules = train_rules(train_df, CONFIG)
 
         active_positions = []
@@ -174,14 +177,13 @@ def run_simulation():
             curr_time = row['time']
             current_bid = row['close_bid']
             
-            # Ask/Bid logica
             if 'low_ask' in row:
                 current_low_ask = row['low_ask']
             else:
                 spread = row['close_ask'] - row['close_bid']
                 current_low_ask = row['low_bid'] + spread
 
-            # 1. Pending Management (Entry Triggers)
+            # Pending Management
             for order in pending_orders[:]:
                 if row['high_bid'] >= order['target_price']:
                     pending_orders.remove(order); continue
@@ -191,30 +193,25 @@ def run_simulation():
                     continue
                 
                 if current_low_ask <= order['limit_price']:
-                    # --- ORDER GEVULD ---
-                    entry_price = order['limit_price']
-                    units = order['units']
                     active_positions.append({
-                        'entry_price': entry_price,
+                        'entry_price': order['limit_price'],
                         'target_price': order['target_price'],
                         'entry_time': curr_time,
-                        'units': units
+                        'units': order['units']
                     })
                     
-                    # Log Entry
                     action_log.append({
                         'time': curr_time,
                         'session_id': target_session_id,
                         'action': 'ENTRY',
-                        'price': entry_price,
-                        'units': units,
+                        'price': order['limit_price'],
+                        'units': order['units'],
                         'pnl_euro': 0.0,
                         'capital_after': current_capital
                     })
-                    
                     pending_orders.remove(order)
 
-            # 2. Exit Check
+            # Exit Check
             for pos in active_positions[:]:
                 exit_p = None
                 exit_reason = ""
@@ -227,11 +224,9 @@ def run_simulation():
                     exit_reason = "EOD"
 
                 if exit_p:
-                    # --- POSITIE GESLOTEN ---
                     profit_cash = (exit_p - pos['entry_price']) * pos['units']
                     current_capital += profit_cash
                     
-                    # Log Exit
                     action_log.append({
                         'time': curr_time,
                         'session_id': target_session_id,
@@ -241,10 +236,9 @@ def run_simulation():
                         'pnl_euro': round(profit_cash, 2),
                         'capital_after': round(current_capital, 2)
                     })
-                    
                     active_positions.remove(pos)
 
-            # 3. Entry Signal Generation
+            # Signal Generation
             time_since = (curr_time - last_entry_time).total_seconds() / 60
             total_committed = len(active_positions) + len(pending_orders)
             entry_ok = (time_since >= CONFIG['cooldown_minutes']) and (total_committed < CONFIG['max_slots'])
@@ -257,10 +251,7 @@ def run_simulation():
                 ask_at_signal = row['close_ask']
                 target_dist = row['sess_range'] * CONFIG['target_range_ratio']
                 target_price = ask_at_signal + target_dist
-
-                slot_cash = current_capital / CONFIG['max_slots']
-                buying_power = slot_cash * CONFIG['leverage']
-                units = int(buying_power / ask_at_signal)
+                units = int((current_capital / CONFIG['max_slots'] * CONFIG['leverage']) / ask_at_signal)
 
                 if units >= 1:
                     pending_orders.append({
@@ -273,36 +264,47 @@ def run_simulation():
                     last_entry_time = curr_time
 
         capital_history.append(current_capital)
-        session_indices.append(target_session_id)
 
     print(f"Eind Kapitaal: €{current_capital:.2f}")
     
     # ==============================================================================
-    # 5. OPSLAAN & VISUALISATIE
+    # 5. OPSLAAN & VISUALISATIE (AANGEPAST)
     # ==============================================================================
     
-    # 1. Logboek opslaan
+    # Logboek opslaan
     if action_log:
         log_df = pd.DataFrame(action_log)
         log_file = os.path.join(OUTPUT_DIR, "trading_log.csv")
         log_df.to_csv(log_file, index=False)
-        print(f"Logboek opgeslagen in: {log_file}")
-    else:
-        print("Geen trades gemaakt, geen logboek opgeslagen.")
 
-    # 2. Equity Curve Opslaan
+    # Grafiek met DATUMS op de X-as
+    # capital_history[1:] omdat index 0 de startwaarde is, en session_dates begint bij sessie 1
     res_df = pd.DataFrame({
-        'Sessie': range(1, len(capital_history)),
+        'Datum': session_dates,
         'Kapitaal': capital_history[1:]
     })
 
     plt.figure(figsize=(12, 6))
-    plt.plot(res_df['Sessie'], res_df['Kapitaal'], label='Account Saldo (€)', color='blue', linewidth=2)
+    
+    # Plot de lijn
+    plt.plot(res_df['Datum'], res_df['Kapitaal'], label='Account Saldo (€)', color='blue', linewidth=2)
     plt.axhline(START_CAPITAL, color='red', linestyle='--', label='Start Kapitaal')
 
+    # Opmaak Titels
     plt.title(f'Simulatie Resultaat\nStart: €{START_CAPITAL} | Eind: €{current_capital:.2f}', fontsize=14)
     plt.ylabel('Account Waarde (€)')
-    plt.xlabel('Aantal Sessies')
+    plt.xlabel('Datum') # Label aangepast
+    
+    # Datum Formattering voor de X-as
+    ax = plt.gca()
+    # Toon als Dag-Maand (bijv. 12-05)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
+    # Zet een interval zodat niet elke dag er staat als het te druk wordt
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    
+    # Roteer de datums zodat ze leesbaar zijn
+    plt.gcf().autofmt_xdate()
+
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -310,8 +312,6 @@ def run_simulation():
     plot_file = os.path.join(OUTPUT_DIR, "equity_curve.png")
     plt.savefig(plot_file)
     print(f"Grafiek opgeslagen in: {plot_file}")
-    
-    # Sluit plot om geheugen vrij te maken
     plt.close()
 
 if __name__ == "__main__":
