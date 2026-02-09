@@ -2,295 +2,317 @@ import requests
 import pandas as pd
 import numpy as np
 import os
-from datetime import datetime, timedelta
+import matplotlib
+# Belangrijk voor GitHub Actions (geen scherm):
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt
 
 # ==============================================================================
-# 1. CONFIGURATIE & INSTELLINGEN
+# 1. CONFIGURATIE
 # ==============================================================================
 GITHUB_USER = "Stijnknoop"
 GITHUB_REPO = "crudeoil"
 FOLDER_PATH = "OIL_CRUDE"
 OUTPUT_DIR = "OIL_CRUDE/Trading_details"
-LOG_FILE = "trading_logs.csv"
 
-# --- BACKTEST WINDOW ---
-ROLLING_WINDOW_SESSIONS = 40 
+# Zorg dat de output map bestaat
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- ACCOUNT & RISK ---
-START_CAPITAL = 650.0        
-MAX_SLOTS = 10
-LEVERAGE = 10
-COOLDOWN_MINUTES = 10
+# Instellingen Backtest
+ROLLING_WINDOW_SIZE = 40
+START_CAPITAL = 650.0
 
-# --- STRATEGIE FILTERS ---
-MIN_HISTORICAL_TRADES = 15        
-MIN_EXPECTED_ROI = 0.0025        
-MIN_RANGE = 0.0008                
-TARGET_RANGE_RATIO = 0.5          
+CONFIG = {
+    'target_range_ratio': 0.5,
+    'min_trades': 20,
+    'min_roi': 0.0045,
+    'min_range': 0.0008,
+    'cooldown_minutes': 15,
+    'max_slots': 10,
+    'leverage': 1
+}
 
 # ==============================================================================
-# 2. DATA OPHALEN & VERWERKEN
+# 2. DATA FUNCTIES
 # ==============================================================================
 def get_data_and_process():
-    print("--- Data ophalen... ---")
+    print("--- Data ophalen en verwerken ---")
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
     api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{FOLDER_PATH}?ref=master"
-    
+
     try:
         r = requests.get(api_url, headers=headers).json()
-        csv_file = next((f for f in r if f['name'].endswith('.csv')), None)
-        if not csv_file: return None
-        
-        print(f"Data gedownload: {csv_file['name']}")
-        df = pd.read_csv(csv_file['download_url'])
-        
+        # Zoek csv files, pak de eerste
+        if isinstance(r, list):
+            csv_file = next(f for f in r if f['name'].endswith('.csv'))
+            download_url = csv_file['download_url']
+        else:
+            # Fallback als de API direct het file object geeft
+            download_url = r['download_url']
+            
+        df = pd.read_csv(download_url)
+
         df['time'] = pd.to_datetime(df['time'], format='ISO8601')
         df = df.set_index('time').sort_index()
         df = df[~df.index.duplicated(keep='first')]
         df = df.resample('1min').ffill().dropna().reset_index()
-        
-        # Sessie Logica
+
         df['price_diff'] = df['close_bid'].diff()
         df['is_flat'] = df['price_diff'] == 0
         df['block_id'] = (df['is_flat'] != df['is_flat'].shift()).cumsum()
-        
+
         break_blocks = []
         stats = df[df['is_flat']].groupby('block_id').agg(start=('time', 'first'), count=('time', 'count'))
         for bid, row in stats.iterrows():
             if row['count'] > 45 and (row['start'].hour >= 21 or row['start'].hour <= 2):
                 break_blocks.append(bid)
-        
+
         df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
         df['new_sess'] = df['is_trading_active'] & ((df['is_trading_active'].shift(1) == False) | (df.index == 0))
         df['session_id'] = df['new_sess'].cumsum()
         df.loc[~df['is_trading_active'], 'session_id'] = -1
-        
+
         return df
     except Exception as e:
         print(f"❌ Error bij data ophalen: {e}")
         return None
 
 def add_features(df):
-    """Voegt indicatoren toe, INCLUSIEF KWARTIEREN."""
     df = df.copy()
-    
+
+    # RSI
     delta = df['close_bid'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     df['rsi'] = 100 - (100 / (1 + (avg_gain/avg_loss)))
-    
+
+    # Sessie info
     sess_stats = df[df['session_id'] != -1].groupby('session_id')['close_bid'].agg(['last'])
     sess_stats['prev_trend'] = np.where((sess_stats['last'] - sess_stats['last'].shift(1)) > 0, 'Groen', 'Rood')
     df = df.merge(sess_stats[['prev_trend']], on='session_id', how='left')
-    
+
+    # Intraday stats
     df['sess_min'] = df.groupby('session_id')['close_bid'].cummin()
     df['sess_max'] = df.groupby('session_id')['close_bid'].cummax()
     df['sess_range'] = df['sess_max'] - df['sess_min']
-    
+
     df['pos_pct'] = ((df['close_bid'] - df['sess_min']) / (df['sess_range'] + 1e-9)).fillna(0.5)
     df['range_pct'] = df['sess_range'] / df['close_bid']
-    
+
+    # Bins
     df['rsi_bin'] = pd.cut(df['rsi'], bins=[0, 30, 70, 100], labels=['Oversold', 'Neutraal', 'Overbought'])
     df['pos_bin'] = pd.cut(df['pos_pct'], bins=[-0.1, 0.3, 0.7, 1.1], labels=['Low', 'Mid', 'High'])
-    
-    # --- NIEUWE LOGICA: KWARTIER BEREKENING ---
+
+    # Kwartier berekening
     df['quarter_hour'] = (df['time'].dt.hour * 4) + (df['time'].dt.minute // 15)
-    
+
     return df
 
 # ==============================================================================
-# 3. TRAINING LOGICA (KWARTIER BASIS)
+# 3. TRAINING LOGICA
 # ==============================================================================
-def train_rules(train_df):
+def train_rules(train_df, cfg):
     entry = train_df['close_ask']
-    target_dist = train_df['sess_range'] * TARGET_RANGE_RATIO
+    target_dist = train_df['sess_range'] * cfg['target_range_ratio']
     
-    # Time Travel Fix (Kijk naar max price in de toekomst van die sessie)
+    # Let op: iloc[::-1] truc voor future max
     max_future = train_df.iloc[::-1].groupby('session_id')['close_bid'].cummax().iloc[::-1]
-    is_win = (max_future >= (entry + target_dist)) & (train_df['range_pct'] > MIN_RANGE)
+
+    is_win = (max_future >= (entry + target_dist)) & (train_df['range_pct'] > cfg['min_range'])
     
     sess_close = train_df.groupby('session_id')['close_bid'].transform('last')
     pnl = np.where(is_win, target_dist, sess_close - entry)
     
     train_df = train_df.assign(roi = pnl / entry)
-    
-    # --- UPDATE: GROEPEREN OP QUARTER_HOUR ---
+
     stats = train_df.groupby(['prev_trend', 'pos_bin', 'rsi_bin', 'quarter_hour'], observed=True)['roi'].agg(['mean', 'count'])
-    winning = stats[(stats['count'] >= MIN_HISTORICAL_TRADES) & (stats['mean'] > MIN_EXPECTED_ROI)]
-    
+    winning = stats[(stats['count'] >= cfg['min_trades']) & (stats['mean'] > cfg['min_roi'])]
+
     return set(winning.index.tolist())
 
 # ==============================================================================
-# 4. HOOFDPROGRAMMA
+# 4. SIMULATIE
 # ==============================================================================
-print(f"--- START GITHUB TRADING BOT ({ROLLING_WINDOW_SESSIONS} SESSIES - KWARTIER STRATEGIE) ---")
+def run_simulation():
+    df_raw = get_data_and_process()
+    if df_raw is None: 
+        return
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-log_path = os.path.join(OUTPUT_DIR, LOG_FILE)
+    valid_sessions = sorted(df_raw[df_raw['session_id'] != -1]['session_id'].unique())
 
-# A. Data
-df_raw = get_data_and_process()
-if df_raw is None: exit()
-df = add_features(df_raw)
-df = df[df['session_id'] != -1].copy()
-valid_sessions = sorted(df['session_id'].unique())
+    current_capital = START_CAPITAL
+    capital_history = [START_CAPITAL]
+    session_indices = []
+    
+    # === NIEUW: Logboek ===
+    action_log = [] 
 
-# B. Kapitaal
-current_capital = START_CAPITAL
-last_log_time = pd.Timestamp("1900-01-01")
-existing_logs = pd.DataFrame() 
+    print(f"\n--- START SIMULATIE ---")
+    print(f"Start Kapitaal: €{current_capital:.2f}")
 
-if os.path.exists(log_path):
-    try:
-        existing_logs = pd.read_csv(log_path)
-        if not existing_logs.empty:
-            existing_logs['Entry_Time'] = pd.to_datetime(existing_logs['Entry_Time'])
-            last_log_time = existing_logs['Entry_Time'].max()
+    for i in range(ROLLING_WINDOW_SIZE, len(valid_sessions)):
+        target_session_id = valid_sessions[i]
+        start_train_id = valid_sessions[i - ROLLING_WINDOW_SIZE]
+
+        mask = (df_raw['session_id'] >= start_train_id) & (df_raw['session_id'] <= target_session_id)
+        window_df = df_raw.loc[mask].copy()
+        proc_df = add_features(window_df)
+
+        train_df = proc_df[proc_df['session_id'] < target_session_id]
+        target_df = proc_df[proc_df['session_id'] == target_session_id].copy().reset_index(drop=True)
+
+        rules = train_rules(train_df, CONFIG)
+
+        active_positions = []
+        pending_orders = []
+        last_entry_time = pd.Timestamp("2000-01-01")
+
+        for idx, row in target_df.iterrows():
+            curr_time = row['time']
+            current_bid = row['close_bid']
             
-            # Kolomnaam check
-            profit_col = 'Profit_Euro' if 'Profit_Euro' in existing_logs.columns else 'profit_abs'
-            if profit_col in existing_logs.columns:
-                total_profit = existing_logs[profit_col].sum()
-                current_capital = START_CAPITAL + total_profit
-                print(f"Historie gedetecteerd. Huidig Kapitaal: €{current_capital:.2f}")
-    except Exception as e:
-        print(f"Fout bij lezen log: {e}. Start vers.")
-        existing_logs = pd.DataFrame()
+            # Ask/Bid logica
+            if 'low_ask' in row:
+                current_low_ask = row['low_ask']
+            else:
+                spread = row['close_ask'] - row['close_bid']
+                current_low_ask = row['low_bid'] + spread
 
-# C. Sessies
-last_processed_idx = df[df['time'] <= last_log_time].index.max()
-if pd.isna(last_processed_idx):
-    start_session_idx = ROLLING_WINDOW_SESSIONS
-else:
-    last_sess_id = df.loc[last_processed_idx, 'session_id']
-    try:
-        start_session_idx = valid_sessions.index(last_sess_id)
-    except ValueError:
-        start_session_idx = ROLLING_WINDOW_SESSIONS
-
-if start_session_idx < ROLLING_WINDOW_SESSIONS: start_session_idx = ROLLING_WINDOW_SESSIONS
-sessions_to_process = valid_sessions[start_session_idx:]
-
-if not sessions_to_process:
-    print("Geen nieuwe sessies.")
-    exit()
-
-print(f"Te verwerken sessie IDs: {len(sessions_to_process)}")
-
-# D. Loop
-all_new_trades = []
-
-for i, target_sess_id in enumerate(sessions_to_process):
-    global_idx = valid_sessions.index(target_sess_id)
-    train_start_sess = valid_sessions[global_idx - ROLLING_WINDOW_SESSIONS]
-    train_end_sess = valid_sessions[global_idx - 1]
-    
-    mask_train = (df['session_id'] >= train_start_sess) & (df['session_id'] <= train_end_sess)
-    train_df = df.loc[mask_train].copy()
-    mask_target = (df['session_id'] == target_sess_id)
-    target_df = df.loc[mask_target].copy()
-    
-    if train_df.empty or target_df.empty: continue
-    
-    rules = train_rules(train_df)
-    positions = []
-    cooldown = 0
-    
-    for idx, row in target_df.iterrows():
-        if row['time'] <= last_log_time: continue
-        curr_time = row['time']
-        
-        # --- EXITS ---
-        for pos in positions[:]:
-            close_trade = False
-            exit_price = 0.0
-            exit_reason = ""
-            
-            if row['high_bid'] >= pos['target_price']:
-                exit_price = pos['target_price']
-                exit_reason = "Target Hit"
-                close_trade = True
-            elif idx == target_df.index[-1]:
-                exit_price = row['close_bid']
-                exit_reason = "Session End"
-                close_trade = True
-            elif row['time'].hour >= 22:
-                exit_price = row['close_bid']
-                exit_reason = "Time Exit"
-                close_trade = True
+            # 1. Pending Management (Entry Triggers)
+            for order in pending_orders[:]:
+                if row['high_bid'] >= order['target_price']:
+                    pending_orders.remove(order); continue
+                if row['time'].hour >= 22:
+                    pending_orders.remove(order); continue
+                if curr_time < order['active_from']:
+                    continue
                 
-            if close_trade:
-                profit_abs = (exit_price - pos['entry_price']) * pos['units']
-                roi = profit_abs / pos['margin_used']
-                
-                # Afronden
-                current_capital += round(profit_abs, 2)
-                
-                all_new_trades.append({
-                    'Entry_Time': pos['entry_time'],
-                    'Entry_Price': round(pos['entry_price'], 3),
-                    'Side': 'Long',
-                    'Units': pos['units'],
-                    'Margin_Used': round(pos['margin_used'], 2),
-                    'Exit_Time': curr_time,
-                    'Exit_Price': round(exit_price, 3),
-                    'ROI_Pct': round(roi * 100, 2),
-                    'Profit_Euro': round(profit_abs, 2),
-                    'Exit_Reason': exit_reason,
-                    'Session_ID': target_sess_id
-                })
-                positions.remove(pos)
-        
-        # --- ENTRIES ---
-        if cooldown > 0: cooldown -= 1
-        
-        # >> UPDATE: Check op quarter_hour ipv hour <<
-        valid_rng = row['range_pct'] > MIN_RANGE
-        state = (row['prev_trend'], row['pos_bin'], row['rsi_bin'], row['quarter_hour'])
-        
-        if (state in rules) and valid_rng and (len(positions) < MAX_SLOTS) and \
-           (cooldown == 0) and (row['time'].hour < 20):
-            
-            ask = row['close_ask']
-            target = ask + (row['sess_range'] * TARGET_RANGE_RATIO)
-            
-            slot_cash = current_capital / MAX_SLOTS
-            buying_power = slot_cash * LEVERAGE
-            units = int(buying_power / ask)
-            
-            margin_required = (units * ask) / LEVERAGE
-            
-            if units >= 1:
-                positions.append({
-                    'entry_time': curr_time,
-                    'entry_price': ask,
-                    'target_price': target,
-                    'units': units,
-                    'margin_used': margin_required
-                })
-                cooldown = COOLDOWN_MINUTES
+                if current_low_ask <= order['limit_price']:
+                    # --- ORDER GEVULD ---
+                    entry_price = order['limit_price']
+                    units = order['units']
+                    active_positions.append({
+                        'entry_price': entry_price,
+                        'target_price': order['target_price'],
+                        'entry_time': curr_time,
+                        'units': units
+                    })
+                    
+                    # Log Entry
+                    action_log.append({
+                        'time': curr_time,
+                        'session_id': target_session_id,
+                        'action': 'ENTRY',
+                        'price': entry_price,
+                        'units': units,
+                        'pnl_euro': 0.0,
+                        'capital_after': current_capital
+                    })
+                    
+                    pending_orders.remove(order)
 
-# E. Opslaan
-if all_new_trades:
-    new_trades_df = pd.DataFrame(all_new_trades)
-    print(f"Nieuwe trades gemaakt: {len(new_trades_df)}")
-    
-    if not existing_logs.empty:
-        # Zorg dat de kolommen matchen
-        for col in new_trades_df.columns:
-            if col not in existing_logs.columns: existing_logs[col] = np.nan
+            # 2. Exit Check
+            for pos in active_positions[:]:
+                exit_p = None
+                exit_reason = ""
+                
+                if row['high_bid'] >= pos['target_price']:
+                    exit_p = pos['target_price']
+                    exit_reason = "TP"
+                elif idx == len(target_df) - 1 or row['time'].hour >= 22:
+                    exit_p = current_bid
+                    exit_reason = "EOD"
+
+                if exit_p:
+                    # --- POSITIE GESLOTEN ---
+                    profit_cash = (exit_p - pos['entry_price']) * pos['units']
+                    current_capital += profit_cash
+                    
+                    # Log Exit
+                    action_log.append({
+                        'time': curr_time,
+                        'session_id': target_session_id,
+                        'action': f'EXIT_{exit_reason}',
+                        'price': exit_p,
+                        'units': pos['units'],
+                        'pnl_euro': round(profit_cash, 2),
+                        'capital_after': round(current_capital, 2)
+                    })
+                    
+                    active_positions.remove(pos)
+
+            # 3. Entry Signal Generation
+            time_since = (curr_time - last_entry_time).total_seconds() / 60
+            total_committed = len(active_positions) + len(pending_orders)
+            entry_ok = (time_since >= CONFIG['cooldown_minutes']) and (total_committed < CONFIG['max_slots'])
             
-        final_df = pd.concat([existing_logs, new_trades_df], ignore_index=True)
+            state = (row['prev_trend'], row['pos_bin'], row['rsi_bin'], row['quarter_hour'])
+            valid_rng = row['range_pct'] > CONFIG['min_range']
+            time_ok = row['time'].hour < 20
+
+            if (state in rules) and valid_rng and entry_ok and time_ok:
+                ask_at_signal = row['close_ask']
+                target_dist = row['sess_range'] * CONFIG['target_range_ratio']
+                target_price = ask_at_signal + target_dist
+
+                slot_cash = current_capital / CONFIG['max_slots']
+                buying_power = slot_cash * CONFIG['leverage']
+                units = int(buying_power / ask_at_signal)
+
+                if units >= 1:
+                    pending_orders.append({
+                        'limit_price': ask_at_signal,
+                        'target_price': target_price,
+                        'units': units,
+                        'created_time': curr_time,
+                        'active_from': curr_time + pd.Timedelta(minutes=2)
+                    })
+                    last_entry_time = curr_time
+
+        capital_history.append(current_capital)
+        session_indices.append(target_session_id)
+
+    print(f"Eind Kapitaal: €{current_capital:.2f}")
+    
+    # ==============================================================================
+    # 5. OPSLAAN & VISUALISATIE
+    # ==============================================================================
+    
+    # 1. Logboek opslaan
+    if action_log:
+        log_df = pd.DataFrame(action_log)
+        log_file = os.path.join(OUTPUT_DIR, "trading_log.csv")
+        log_df.to_csv(log_file, index=False)
+        print(f"Logboek opgeslagen in: {log_file}")
     else:
-        final_df = new_trades_df
-        
-    final_df = final_df.sort_values('Entry_Time')
-    final_df.to_csv(log_path, index=False)
-    print(f"Log opgeslagen. Nieuw saldo: €{current_capital:.2f}")
-else:
-    print("Geen nieuwe trades gevonden.")
+        print("Geen trades gemaakt, geen logboek opgeslagen.")
 
-print("--- RUN COMPLETE ---")
+    # 2. Equity Curve Opslaan
+    res_df = pd.DataFrame({
+        'Sessie': range(1, len(capital_history)),
+        'Kapitaal': capital_history[1:]
+    })
+
+    plt.figure(figsize=(12, 6))
+    plt.plot(res_df['Sessie'], res_df['Kapitaal'], label='Account Saldo (€)', color='blue', linewidth=2)
+    plt.axhline(START_CAPITAL, color='red', linestyle='--', label='Start Kapitaal')
+
+    plt.title(f'Simulatie Resultaat\nStart: €{START_CAPITAL} | Eind: €{current_capital:.2f}', fontsize=14)
+    plt.ylabel('Account Waarde (€)')
+    plt.xlabel('Aantal Sessies')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    
+    plot_file = os.path.join(OUTPUT_DIR, "equity_curve.png")
+    plt.savefig(plot_file)
+    print(f"Grafiek opgeslagen in: {plot_file}")
+    
+    # Sluit plot om geheugen vrij te maken
+    plt.close()
+
+if __name__ == "__main__":
+    run_simulation()
