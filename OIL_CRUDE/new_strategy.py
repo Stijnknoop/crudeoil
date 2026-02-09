@@ -21,7 +21,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Instellingen Backtest
 ROLLING_WINDOW_SIZE = 40
-START_CAPITAL = 650.0
+START_CAPITAL = 1000.0
 
 CONFIG = {
     'target_range_ratio': 0.5,
@@ -30,7 +30,7 @@ CONFIG = {
     'min_range': 0.0008,
     'cooldown_minutes': 15,
     'max_slots': 10,
-    'leverage': 10
+    'leverage': 1
 }
 
 # ==============================================================================
