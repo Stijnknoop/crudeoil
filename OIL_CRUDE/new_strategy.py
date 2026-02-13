@@ -25,7 +25,7 @@ IDENTIFIER = os.environ.get("IDENTIFIER", "stijn-knoop@live.nl")
 PASSWORD = os.environ.get("PASSWORD", "Hallohallo123!")
 API_KEY = os.environ.get("X_CAP_API_KEY", "FuHgMrwvmJPAYYMp")
 
-# DE BESTE SETTINGS (Independent Batches)
+# BESTE SETTINGS (1-op-1 overgenomen van jouw working script)
 BEST_PARAMS = {
     'RSI_PERIOD': 14,          
     'MA_PERIOD': 50,
@@ -91,7 +91,6 @@ def get_data_github():
     api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{FOLDER_PATH}?ref=master"
     try:
         r = requests.get(api_url, headers=headers).json()
-        # Fallback list logic
         if isinstance(r, list):
             csv_file = next((f for f in r if f['name'].endswith('.csv')), None)
             if not csv_file: return None
@@ -110,14 +109,12 @@ def get_data_github():
         return None
 
 def merge_and_process(df1, df2):
-    # Stap 1: Mergen (Data samenvoegen)
     if df1 is None and df2 is None: return None
     if df1 is None: df = df2.copy()
     elif df2 is None: df = df1.copy()
     else:
         df = pd.concat([df1, df2]).drop_duplicates(subset="time", keep="last").sort_values("time").reset_index(drop=True)
     
-    # Stap 2: Resample en Sessie Logica
     df = df.set_index('time').sort_index()
     df = df[~df.index.duplicated(keep='first')]
     df = df.resample('1min').ffill().dropna().reset_index()
@@ -137,7 +134,6 @@ def merge_and_process(df1, df2):
     df['session_id'] = df['new_sess'].cumsum()
     df.loc[~df['is_trading_active'], 'session_id'] = -1
     
-    # Stap 3: Features Toevoegen
     df['hour'] = df['time'].dt.hour
     df['mid_price'] = (df['close_ask'] + df['close_bid']) / 2
     
@@ -157,7 +153,7 @@ def merge_and_process(df1, df2):
     return df.dropna().reset_index(drop=True)
 
 # ==============================================================================
-# 3. BACKTEST LOGICA (MET 22:00 HARD EXIT)
+# 3. BACKTEST LOGICA
 # ==============================================================================
 
 def run_strategy(params, data):
@@ -172,6 +168,8 @@ def run_strategy(params, data):
     TREND_COL = f"trend_{params['MA_PERIOD']}"
     
     equity = START_CAPITAL
+    
+    # AANPASSING: Start met lege lijsten zodat we pas plotten vanaf trade start (zoals je wilde)
     equity_curve = [] 
     dates_curve = []
     
@@ -315,7 +313,7 @@ def run_strategy(params, data):
                                     })
                                     last_signal_idx = t
         
-        # Voeg alleen handelsdagen toe aan de curve
+        # AANPASSING: Voeg pas toe aan het einde van een HANDELSDAG
         equity_curve.append(equity)
         dates_curve.append(dff['time'].iloc[-1])
 
@@ -336,7 +334,7 @@ if __name__ == "__main__":
             
         if len(dates) > 0:
             plt.figure(figsize=(12, 6))
-            # Plak startpunt voor de curve (visueel)
+            # Plak startpunt (fictieve dag -1) zodat curve mooi begint
             if dates:
                 start_date = dates[0] - timedelta(days=1)
                 dates = [start_date] + dates
