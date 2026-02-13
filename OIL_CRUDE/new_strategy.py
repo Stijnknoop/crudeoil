@@ -25,7 +25,7 @@ IDENTIFIER = os.environ.get("IDENTIFIER", "stijn-knoop@live.nl")
 PASSWORD = os.environ.get("PASSWORD", "Hallohallo123!")
 API_KEY = os.environ.get("X_CAP_API_KEY", "FuHgMrwvmJPAYYMp")
 
-# DE "GOEDE" PARAMETERS
+# DE BESTE SETTINGS (Independent Batches)
 BEST_PARAMS = {
     'RSI_PERIOD': 14,          
     'MA_PERIOD': 50,
@@ -41,10 +41,10 @@ BEST_PARAMS = {
     'MIN_OBS': 40              
 }
 
-START_CAPITAL = 10000.0 # Zelfde startbedrag als je test
+START_CAPITAL = 10000.0
 
 # ==============================================================================
-# 2. DATA FUNCTIES
+# 2. DATA FUNCTIES (DE OUDE, BEWEZEN MANIER)
 # ==============================================================================
 
 def get_session_tokens():
@@ -91,20 +91,37 @@ def get_data_github():
     api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{FOLDER_PATH}?ref=master"
     try:
         r = requests.get(api_url, headers=headers).json()
-        download_url = r[0]['download_url'] if isinstance(r, list) else r['download_url']
+        # Fallback list logic
+        if isinstance(r, list):
+            csv_file = next((f for f in r if f['name'].endswith('.csv')), None)
+            if not csv_file: return None
+            download_url = csv_file['download_url']
+        else:
+            download_url = r.get('download_url')
+            
+        if not download_url: return None
+
         df = pd.read_csv(download_url)
         df['time'] = pd.to_datetime(df['time'])
         if df['time'].dt.tz is not None: df['time'] = df['time'].dt.tz_localize(None)
         return df
-    except: return None
+    except Exception as e: 
+        print(f"Github error: {e}")
+        return None
 
-def merge_and_process(df_old, df_new):
-    if df_old is None: return df_new
-    if df_new is None: return df_old
+def merge_and_process(df1, df2):
+    # Stap 1: Mergen (Data samenvoegen)
+    if df1 is None and df2 is None: return None
+    if df1 is None: df = df2.copy()
+    elif df2 is None: df = df1.copy()
+    else:
+        df = pd.concat([df1, df2]).drop_duplicates(subset="time", keep="last").sort_values("time").reset_index(drop=True)
     
-    df = pd.concat([df_old, df_new]).drop_duplicates(subset="time", keep="last").sort_values("time").reset_index(drop=True)
-    df = df.set_index('time').resample('1min').ffill().dropna().reset_index()
-    
+    # Stap 2: Resample en Sessie Logica (Jouw originele methode)
+    df = df.set_index('time').sort_index()
+    df = df[~df.index.duplicated(keep='first')]
+    df = df.resample('1min').ffill().dropna().reset_index()
+
     df['price_diff'] = df['close_bid'].diff()
     df['is_flat'] = df['price_diff'] == 0
     df['block_id'] = (df['is_flat'] != df['is_flat'].shift()).cumsum()
@@ -120,10 +137,10 @@ def merge_and_process(df_old, df_new):
     df['session_id'] = df['new_sess'].cumsum()
     df.loc[~df['is_trading_active'], 'session_id'] = -1
     
+    # Stap 3: Features Toevoegen
     df['hour'] = df['time'].dt.hour
     df['mid_price'] = (df['close_ask'] + df['close_bid']) / 2
     
-    # FEATURES (Exact zoals in jouw snippet)
     p_rsi = BEST_PARAMS['RSI_PERIOD']
     delta = df['mid_price'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=p_rsi).mean()
@@ -140,7 +157,7 @@ def merge_and_process(df_old, df_new):
     return df.dropna().reset_index(drop=True)
 
 # ==============================================================================
-# 3. BACKTEST LOGICA (EXACTE KOPIE VAN JOUW WERKENDE FUNCTIE)
+# 3. BACKTEST LOGICA (NIEUWE STRATEGIE)
 # ==============================================================================
 
 def run_strategy(params, data):
@@ -227,7 +244,7 @@ def run_strategy(params, data):
         for t in range(50, len(dff)):
             curr_time = times[t]
             
-            # 1. ACTIVE TRADES CHECK
+            # 1. EXITS
             for k in range(len(active_trades) - 1, -1, -1):
                 trade = active_trades[k]
                 exit_signal = False
@@ -248,7 +265,7 @@ def run_strategy(params, data):
                     action_log.append({'time': curr_time, 'action': f'EXIT_{reason}', 'pnl': pnl, 'equity': equity})
                     active_trades.pop(k) 
 
-            # 2. PENDING ORDERS CHECK
+            # 2. FILLS
             for k in range(len(pending_orders) - 1, -1, -1):
                 order = pending_orders[k]
                 if p_high_bid[t] >= order['target_price']:
@@ -270,7 +287,7 @@ def run_strategy(params, data):
                             action_log.append({'time': curr_time, 'action': 'ENTRY', 'price': order['limit_price']})
                         pending_orders.pop(k)
 
-            # 3. SIGNAL GENERATION
+            # 3. SIGNALS
             if len(active_trades) + len(pending_orders) < MAX_TRADES:
                 if t >= last_signal_idx + COOLDOWN:
                     if hours[t] < 22:
@@ -299,6 +316,7 @@ def run_strategy(params, data):
     return equity_curve, dates_curve, action_log
 
 if __name__ == "__main__":
+    print("--- START NIEUWE STRATEGIE ---")
     df_git = get_data_github()
     df_cap = fetch_live_data_capital()
     df_main = merge_and_process(df_git, df_cap)
@@ -308,6 +326,7 @@ if __name__ == "__main__":
         
         if logs:
             pd.DataFrame(logs).to_csv(os.path.join(OUTPUT_DIR, "trading_log.csv"), index=False)
+            print("Trade log opgeslagen.")
             
         if len(dates) > 0:
             plt.figure(figsize=(12, 6))
@@ -317,3 +336,7 @@ if __name__ == "__main__":
             ax = plt.gca(); ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
             plt.gcf().autofmt_xdate()
             plt.savefig(os.path.join(OUTPUT_DIR, "equity_curve.png"))
+            print("Equity curve opgeslagen.")
+    else:
+        print("Geen data gevonden!")
+    print("--- KLAAR ---")
