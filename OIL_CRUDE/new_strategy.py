@@ -3,45 +3,105 @@ import pandas as pd
 import numpy as np
 import os
 import matplotlib
-# Belangrijk voor GitHub Actions (geen scherm):
-matplotlib.use('Agg') 
+matplotlib.use('Agg') # Headless mode voor GitHub Actions
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates # Toegevoegd voor datum opmaak
+import matplotlib.dates as mdates
+import http.client
+import json
+from datetime import datetime
+import pytz
 
 # ==============================================================================
-# 1. CONFIGURATIE
+# 1. CONFIGURATIE & CREDENTIALS
 # ==============================================================================
 GITHUB_USER = "Stijnknoop"
 GITHUB_REPO = "crudeoil"
 FOLDER_PATH = "OIL_CRUDE"
 OUTPUT_DIR = "OIL_CRUDE/Trading_details"
 
-# Zorg dat de output map bestaat
+# Zorg dat de output mappen bestaan
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Instellingen Backtest
-ROLLING_WINDOW_SIZE = 40
-START_CAPITAL = 1000.0
+# CAPITALS API CREDENTIALS
+IDENTIFIER = os.environ.get("IDENTIFIER", "stijn-knoop@live.nl")
+PASSWORD = os.environ.get("PASSWORD", "Hallohallo123!")
+API_KEY = os.environ.get("X_CAP_API_KEY", "FuHgMrwvmJPAYYMp")
 
+# STRATEGIE PARAMETERS (De "Beste Settings")
 CONFIG = {
-    'target_range_ratio': 0.5,
-    'min_trades': 20,
-    'min_roi': 0.0045,
-    'min_range': 0.0008,
-    'cooldown_minutes': 15,
-    'max_slots': 10,
-    'leverage': 10
+    'RSI_PERIOD': 7,          
+    'MA_PERIOD': 50,
+    
+    # Risk Management
+    'LEVERAGE': 10,              # Hefboom
+    'MAX_CONCURRENT_TRADES': 10, # Aantal slots (Equity / 10)
+    'BATCH_COOLDOWN': 5,         # Wachttijd tussen batches (minuten)
+    
+    # Strategie
+    'WINDOW_SIZE': 40,         
+    'ENTRY_THRESHOLD': 0.7,    
+    'TP_RANGE': 0.8,           
+    'MAX_DROP': 0.6,           
+    'MIN_OBS': 40              
 }
 
+START_CAPITAL = 1000.0
+
 # ==============================================================================
-# 2. DATA FUNCTIES
+# 2. DATA FUNCTIES (GITHUB + CAPITAL MERGE)
 # ==============================================================================
-def get_data_and_process():
-    print("--- Data ophalen en verwerken ---")
+
+def get_now():
+    NL_TZ = pytz.timezone("Europe/Amsterdam")
+    return datetime.now(NL_TZ)
+
+def get_session_tokens():
+    conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
+    payload = json.dumps({"identifier": IDENTIFIER, "password": PASSWORD})
+    headers = {"Content-Type": "application/json", "X-CAP-API-KEY": API_KEY}
+    try:
+        conn.request("POST", "/api/v1/session", payload, headers)
+        res = conn.getresponse()
+        if res.status == 200:
+            return res.getheader("X-SECURITY-TOKEN"), res.getheader("CST")
+        return None, None
+    except:
+        return None, None
+
+def fetch_live_data_capital():
+    sec_token, cst = get_session_tokens()
+    if not sec_token:
+        print("Kon niet inloggen bij Capital.com")
+        return None
+
+    conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
+    headers = {"X-SECURITY-TOKEN": sec_token, "CST": cst, "X-CAP-API-KEY": API_KEY}
+    
+    try:
+        conn.request("GET", "/api/v1/prices/OIL_CRUDE?resolution=MINUTE&max=600", "", headers)
+        res = conn.getresponse()
+        data = json.loads(res.read().decode())
+        prices = data.get("prices", [])
+        
+        if not prices: return None
+        
+        df = pd.json_normalize(prices)
+        df = df[["snapshotTime", "openPrice.bid", "highPrice.bid", "lowPrice.bid", "closePrice.bid",
+                 "openPrice.ask", "highPrice.ask", "lowPrice.ask", "closePrice.ask", "lastTradedVolume"]]
+        df.columns = ["time", "open_bid", "high_bid", "low_bid", "close_bid",
+                      "open_ask", "high_ask", "low_ask", "close_ask", "volume"]
+        
+        df["time"] = pd.to_datetime(df["time"]).dt.tz_localize(None) # UTC Naive maken
+        return df
+    except Exception as e:
+        print(f"Capital API Error: {e}")
+        return None
+
+def get_data_github():
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
     api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{FOLDER_PATH}?ref=master"
-
+    
     try:
         r = requests.get(api_url, headers=headers).json()
         if isinstance(r, list):
@@ -51,268 +111,309 @@ def get_data_and_process():
             download_url = r['download_url']
             
         df = pd.read_csv(download_url)
-
-        df['time'] = pd.to_datetime(df['time'], format='ISO8601')
-        df = df.set_index('time').sort_index()
-        df = df[~df.index.duplicated(keep='first')]
-        df = df.resample('1min').ffill().dropna().reset_index()
-
-        df['price_diff'] = df['close_bid'].diff()
-        df['is_flat'] = df['price_diff'] == 0
-        df['block_id'] = (df['is_flat'] != df['is_flat'].shift()).cumsum()
-
-        break_blocks = []
-        stats = df[df['is_flat']].groupby('block_id').agg(start=('time', 'first'), count=('time', 'count'))
-        for bid, row in stats.iterrows():
-            if row['count'] > 45 and (row['start'].hour >= 21 or row['start'].hour <= 2):
-                break_blocks.append(bid)
-
-        df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
-        df['new_sess'] = df['is_trading_active'] & ((df['is_trading_active'].shift(1) == False) | (df.index == 0))
-        df['session_id'] = df['new_sess'].cumsum()
-        df.loc[~df['is_trading_active'], 'session_id'] = -1
-
+        df['time'] = pd.to_datetime(df['time'])
+        # Zorg dat github data ook timezone naive is voor de merge
+        if df['time'].dt.tz is not None:
+            df['time'] = df['time'].dt.tz_localize(None)
+            
         return df
     except Exception as e:
-        print(f"❌ Error bij data ophalen: {e}")
+        print(f"Github Data Error: {e}")
         return None
 
-def add_features(df):
-    df = df.copy()
+def merge_and_process(df_old, df_new):
+    if df_old is None: return df_new
+    if df_new is None: return df_old
+    
+    # Merge en ontdubbelen
+    df = pd.concat([df_old, df_new]).drop_duplicates(subset="time", keep="last").sort_values("time").reset_index(drop=True)
+    
+    # Resample naar 1 minuut om gaten te vullen (forward fill)
+    df = df.set_index('time').resample('1min').ffill().dropna().reset_index()
+    
+    # Sessies detecteren (breaks detectie)
+    df['price_diff'] = df['close_bid'].diff()
+    df['is_flat'] = df['price_diff'] == 0
+    df['block_id'] = (df['is_flat'] != df['is_flat'].shift()).cumsum()
 
+    break_blocks = []
+    # Als de prijs meer dan 45 minuten stilstaat in de nacht, is het een break
+    stats = df[df['is_flat']].groupby('block_id').agg(start=('time', 'first'), count=('time', 'count'))
+    for bid, row in stats.iterrows():
+        if row['count'] > 45 and (row['start'].hour >= 21 or row['start'].hour <= 2):
+            break_blocks.append(bid)
+
+    df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
+    # Nieuwe sessie start als trading weer actief wordt na inactief
+    df['new_sess'] = df['is_trading_active'] & ((df['is_trading_active'].shift(1) == False) | (df.index == 0))
+    df['session_id'] = df['new_sess'].cumsum()
+    # Data buiten sessies negeren (-1)
+    df.loc[~df['is_trading_active'], 'session_id'] = -1
+    
+    # Mid Price & Features
+    df['mid_price'] = (df['close_ask'] + df['close_bid']) / 2
+    
     # RSI
-    delta = df['close_bid'].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    df['rsi'] = 100 - (100 / (1 + (avg_gain/avg_loss)))
+    p_rsi = CONFIG['RSI_PERIOD']
+    delta = df['mid_price'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=p_rsi).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=p_rsi).mean()
+    rs_val = gain / loss
+    df[f'rsi_{p_rsi}'] = 100 - (100 / (1 + rs_val))
+    
+    # Trend
+    p_ma = CONFIG['MA_PERIOD']
+    ma = df['mid_price'].rolling(window=p_ma).mean()
+    df[f'trend_{p_ma}'] = (df['mid_price'] / ma) - 1
+    
+    # Volatility
+    df['vol_ratio'] = df['mid_price'].rolling(20).std() / df['mid_price'].rolling(100).std()
+    
+    # Hour
+    df['hour'] = df['time'].dt.hour
+    
+    return df.dropna().reset_index(drop=True)
 
-    # Sessie info
-    sess_stats = df[df['session_id'] != -1].groupby('session_id')['close_bid'].agg(['last'])
-    sess_stats['prev_trend'] = np.where((sess_stats['last'] - sess_stats['last'].shift(1)) > 0, 'Groen', 'Rood')
-    df = df.merge(sess_stats[['prev_trend']], on='session_id', how='left')
+# ==============================================================================
+# 3. BACKTEST LOGICA (PENDING ORDERS)
+# ==============================================================================
 
-    # Intraday stats
-    df['sess_min'] = df.groupby('session_id')['close_bid'].cummin()
-    df['sess_max'] = df.groupby('session_id')['close_bid'].cummax()
-    df['sess_range'] = df['sess_max'] - df['sess_min']
-
-    df['pos_pct'] = ((df['close_bid'] - df['sess_min']) / (df['sess_range'] + 1e-9)).fillna(0.5)
-    df['range_pct'] = df['sess_range'] / df['close_bid']
-
+def run_strategy(data):
+    # Unpack parameters
+    W_SIZE = CONFIG['WINDOW_SIZE']
+    E_THRESH = CONFIG['ENTRY_THRESHOLD']
+    TP_R = CONFIG['TP_RANGE']
+    MAX_DROP = CONFIG['MAX_DROP']
+    MIN_OBS = CONFIG['MIN_OBS']
+    
+    MAX_TRADES = CONFIG['MAX_CONCURRENT_TRADES']
+    COOLDOWN = CONFIG['BATCH_COOLDOWN']
+    LEVERAGE = CONFIG['LEVERAGE']
+    
+    RSI_COL = f"rsi_{CONFIG['RSI_PERIOD']}"
+    TREND_COL = f"trend_{CONFIG['MA_PERIOD']}"
+    
     # Bins
-    df['rsi_bin'] = pd.cut(df['rsi'], bins=[0, 30, 70, 100], labels=['Oversold', 'Neutraal', 'Overbought'])
-    df['pos_bin'] = pd.cut(df['pos_pct'], bins=[-0.1, 0.3, 0.7, 1.1], labels=['Low', 'Mid', 'High'])
-
-    # Kwartier berekening
-    df['quarter_hour'] = (df['time'].dt.hour * 4) + (df['time'].dt.minute // 15)
-
-    return df
-
-# ==============================================================================
-# 3. TRAINING LOGICA
-# ==============================================================================
-def train_rules(train_df, cfg):
-    entry = train_df['close_ask']
-    target_dist = train_df['sess_range'] * cfg['target_range_ratio']
-    max_future = train_df.iloc[::-1].groupby('session_id')['close_bid'].cummax().iloc[::-1]
-
-    is_win = (max_future >= (entry + target_dist)) & (train_df['range_pct'] > cfg['min_range'])
+    range_bins = np.linspace(0, 1.0, 6)
+    rsi_bins = [0, 30, 70, 100]
+    trend_bins = [-np.inf, -0.0005, 0.0005, np.inf]
+    vol_bins = [-np.inf, 0.9, 1.2, np.inf]
     
-    sess_close = train_df.groupby('session_id')['close_bid'].transform('last')
-    pnl = np.where(is_win, target_dist, sess_close - entry)
+    unique_sessions = sorted(data[data['session_id'] != -1]['session_id'].unique())
     
-    train_df = train_df.assign(roi = pnl / entry)
-
-    stats = train_df.groupby(['prev_trend', 'pos_bin', 'rsi_bin', 'quarter_hour'], observed=True)['roi'].agg(['mean', 'count'])
-    winning = stats[(stats['count'] >= cfg['min_trades']) & (stats['mean'] > cfg['min_roi'])]
-
-    return set(winning.index.tolist())
-
-# ==============================================================================
-# 4. SIMULATIE
-# ==============================================================================
-def run_simulation():
-    df_raw = get_data_and_process()
-    if df_raw is None: 
-        return
-
-    valid_sessions = sorted(df_raw[df_raw['session_id'] != -1]['session_id'].unique())
-
-    current_capital = START_CAPITAL
-    capital_history = [START_CAPITAL]
-    session_dates = [] # NIEUW: Lijst voor datums
+    equity = START_CAPITAL
+    equity_curve = [START_CAPITAL]
+    dates_curve = [data['time'].iloc[0]]
+    action_log = []
     
-    action_log = [] 
-
-    print(f"\n--- START SIMULATIE ---")
-    print(f"Start Kapitaal: €{current_capital:.2f}")
-
-    for i in range(ROLLING_WINDOW_SIZE, len(valid_sessions)):
-        target_session_id = valid_sessions[i]
-        start_train_id = valid_sessions[i - ROLLING_WINDOW_SIZE]
-
-        mask = (df_raw['session_id'] >= start_train_id) & (df_raw['session_id'] <= target_session_id)
-        window_df = df_raw.loc[mask].copy()
-        proc_df = add_features(window_df)
-
-        train_df = proc_df[proc_df['session_id'] < target_session_id]
-        target_df = proc_df[proc_df['session_id'] == target_session_id].copy().reset_index(drop=True)
-
-        # NIEUW: Vang de datum van deze sessie
-        if not target_df.empty:
-            session_dates.append(target_df['time'].iloc[0])
-        else:
-            # Fallback voor het geval een sessie leeg is (zou niet moeten gebeuren)
-            session_dates.append(pd.Timestamp.now())
-
-        rules = train_rules(train_df, CONFIG)
-
-        active_positions = []
-        pending_orders = []
-        last_entry_time = pd.Timestamp("2000-01-01")
-
-        for idx, row in target_df.iterrows():
-            curr_time = row['time']
-            current_bid = row['close_bid']
+    print(f"Start simulatie over {len(unique_sessions) - W_SIZE} sessies...")
+    
+    for i in range(W_SIZE, len(unique_sessions)):
+        test_sess_id = unique_sessions[i]
+        start_train = unique_sessions[i-W_SIZE]
+        end_train = unique_sessions[i-1]
+        
+        # --- TRAINING ---
+        mask = (data['session_id'] >= start_train) & (data['session_id'] <= end_train)
+        df_h = data[mask].copy()
+        
+        sess_grp = df_h.groupby('session_id')
+        df_h['day_high'] = sess_grp['mid_price'].cummax()
+        df_h['day_low'] = sess_grp['mid_price'].cummin()
+        df_h['day_rng'] = df_h['day_high'] - df_h['day_low']
+        
+        # Filter 0 range + Copy
+        df_h = df_h[df_h['day_rng'] > 0].copy()
+        
+        target = df_h['mid_price'] + TP_R * df_h['day_rng']
+        fut_max = df_h.groupby('session_id')['mid_price'].transform(lambda x: x[::-1].cummax()[::-1])
+        df_h['hit'] = (fut_max >= target).astype(int)
+        
+        drop_tgt = df_h['mid_price'] - TP_R * df_h['day_rng']
+        fut_min = df_h.groupby('session_id')['mid_price'].transform(lambda x: x[::-1].cummin()[::-1])
+        df_h['loss'] = (fut_min <= drop_tgt).astype(int)
+        
+        # Bucketing
+        df_h['b_rng'] = pd.cut((df_h['mid_price'] - df_h['day_low']) / df_h['day_rng'], bins=range_bins, labels=False)
+        df_h['b_rsi'] = pd.cut(df_h[RSI_COL], bins=rsi_bins, labels=False)     
+        df_h['b_trd'] = pd.cut(df_h[TREND_COL], bins=trend_bins, labels=False) 
+        df_h['b_vol'] = pd.cut(df_h['vol_ratio'], bins=vol_bins, labels=False) 
+        
+        stats = df_h.groupby(['hour', 'b_rng', 'b_rsi', 'b_trd', 'b_vol'])[['hit', 'loss']].agg(['mean', 'count'])
+        valid_stats = stats[stats[('hit', 'count')] >= MIN_OBS]
+        valid_stats.columns = ['_'.join(col) for col in valid_stats.columns] 
+        prob_map = valid_stats[['hit_mean', 'loss_mean']].to_dict('index')
+        
+        # --- TRADING ---
+        dff = data[data['session_id'] == test_sess_id].copy().reset_index(drop=True)
+        if len(dff) < 50: continue
+        
+        # Arrays
+        p_mid = dff['mid_price'].values
+        p_ask = dff['close_ask'].values 
+        p_low_ask = dff['low_ask'].values 
+        p_bid = dff['close_bid'].values 
+        p_high_bid = dff['high_bid'].values 
+        
+        hours = dff['hour'].values
+        times = dff['time'].values
+        rsis = dff[RSI_COL].values 
+        trends = dff[TREND_COL].values
+        vols = dff['vol_ratio'].values
+        
+        high_cum = np.maximum.accumulate(p_mid)
+        low_cum = np.minimum.accumulate(p_mid)
+        
+        active_trades = []   
+        pending_orders = []  
+        last_signal_idx = -999 
+        
+        for t in range(50, len(dff)):
+            curr_time = times[t]
             
-            if 'low_ask' in row:
-                current_low_ask = row['low_ask']
-            else:
-                spread = row['close_ask'] - row['close_bid']
-                current_low_ask = row['low_bid'] + spread
+            # 1. ACTIVE TRADES CHECK
+            for k in range(len(active_trades) - 1, -1, -1):
+                trade = active_trades[k]
+                exit_signal = False
+                reason = ""
+                exit_price = 0.0
+                
+                if p_high_bid[t] >= trade['target_price']:
+                    exit_signal = True; exit_price = trade['target_price']; reason = "TP"
+                elif t == len(dff) - 1:
+                    exit_signal = True; exit_price = p_bid[t]; reason = "EOD"
+                
+                if exit_signal:
+                    # % Verandering
+                    raw_ret = (exit_price - trade['entry_price']) / trade['entry_price']
+                    # PnL = Stake * Leverage * %
+                    pnl = trade['stake'] * LEVERAGE * raw_ret
+                    
+                    # Isolated Margin Check
+                    if pnl < -trade['stake']: 
+                        pnl = -trade['stake']
+                        reason = "LIQUIDATION"
+                    
+                    equity += pnl
+                    
+                    action_log.append({
+                        'time': curr_time,
+                        'session_id': test_sess_id,
+                        'action': f'EXIT_{reason}',
+                        'price': exit_price,
+                        'pnl_euro': round(pnl, 2),
+                        'capital_after': round(equity, 2)
+                    })
+                    active_trades.pop(k) 
 
-            # Pending Management
-            for order in pending_orders[:]:
-                if row['high_bid'] >= order['target_price']:
-                    pending_orders.remove(order); continue
-                if row['time'].hour >= 22:
-                    pending_orders.remove(order); continue
-                if curr_time < order['active_from']:
+            # 2. PENDING ORDERS CHECK
+            for k in range(len(pending_orders) - 1, -1, -1):
+                order = pending_orders[k]
+                
+                # Cancel condities
+                if p_high_bid[t] >= order['target_price'] or t == len(dff) - 1:
+                    pending_orders.pop(k)
                     continue
                 
-                if current_low_ask <= order['limit_price']:
-                    active_positions.append({
-                        'entry_price': order['limit_price'],
-                        'target_price': order['target_price'],
-                        'entry_time': curr_time,
-                        'units': order['units']
-                    })
-                    
-                    action_log.append({
-                        'time': curr_time,
-                        'session_id': target_session_id,
-                        'action': 'ENTRY',
-                        'price': order['limit_price'],
-                        'units': order['units'],
-                        'pnl_euro': 0.0,
-                        'capital_after': current_capital
-                    })
-                    pending_orders.remove(order)
+                # Fill logic (n+2)
+                if t >= order['signal_idx'] + 2:
+                    if p_low_ask[t] <= order['limit_price']:
+                        
+                        # STAKE BEREKENING (Intraday Compounding)
+                        available_equity = max(0, equity)
+                        stake_per_trade = available_equity / MAX_TRADES
+                        
+                        if stake_per_trade > 0:
+                            new_trade = {
+                                'entry_price': order['limit_price'],
+                                'target_price': order['target_price'],
+                                'stake': stake_per_trade,
+                                'entry_time': curr_time
+                            }
+                            active_trades.append(new_trade)
+                            
+                            action_log.append({
+                                'time': curr_time,
+                                'session_id': test_sess_id,
+                                'action': 'ENTRY',
+                                'price': order['limit_price'],
+                                'stake': round(stake_per_trade, 2),
+                                'capital_after': round(equity, 2)
+                            })
+                        pending_orders.pop(k)
 
-            # Exit Check
-            for pos in active_positions[:]:
-                exit_p = None
-                exit_reason = ""
-                
-                if row['high_bid'] >= pos['target_price']:
-                    exit_p = pos['target_price']
-                    exit_reason = "TP"
-                elif idx == len(target_df) - 1 or row['time'].hour >= 22:
-                    exit_p = current_bid
-                    exit_reason = "EOD"
-
-                if exit_p:
-                    profit_cash = (exit_p - pos['entry_price']) * pos['units']
-                    current_capital += profit_cash
-                    
-                    action_log.append({
-                        'time': curr_time,
-                        'session_id': target_session_id,
-                        'action': f'EXIT_{exit_reason}',
-                        'price': exit_p,
-                        'units': pos['units'],
-                        'pnl_euro': round(profit_cash, 2),
-                        'capital_after': round(current_capital, 2)
-                    })
-                    active_positions.remove(pos)
-
-            # Signal Generation
-            time_since = (curr_time - last_entry_time).total_seconds() / 60
-            total_committed = len(active_positions) + len(pending_orders)
-            entry_ok = (time_since >= CONFIG['cooldown_minutes']) and (total_committed < CONFIG['max_slots'])
+            # 3. SIGNAL GENERATION
+            current_total = len(active_trades) + len(pending_orders)
             
-            state = (row['prev_trend'], row['pos_bin'], row['rsi_bin'], row['quarter_hour'])
-            valid_rng = row['range_pct'] > CONFIG['min_range']
-            time_ok = row['time'].hour < 20
+            if current_total < MAX_TRADES:
+                if t >= last_signal_idx + COOLDOWN:
+                    if hours[t] < 22: # Geen nieuwe trades na 22:00
+                        rng = high_cum[t] - low_cum[t]
+                        if rng > 0:
+                            rng_pos = (p_mid[t] - low_cum[t]) / rng
+                            b_r = min(int(rng_pos * 5), 4)
+                            b_rs = 0 if rsis[t] < 30 else (2 if rsis[t] > 70 else 1)
+                            b_tr = 0 if trends[t] < -0.0005 else (2 if trends[t] > 0.0005 else 1)
+                            b_vl = 0 if vols[t] < 0.9 else (2 if vols[t] > 1.2 else 1)
+                            
+                            key = (hours[t], b_r, b_rs, b_tr, b_vl)
+                            
+                            if key in prob_map:
+                                stats = prob_map[key]
+                                if stats['hit_mean'] >= E_THRESH and stats['loss_mean'] <= MAX_DROP:
+                                    limit_pr = p_ask[t]
+                                    target_pr = limit_pr + (TP_R * rng)
+                                    
+                                    new_order = {
+                                        'limit_price': limit_pr,
+                                        'target_price': target_pr,
+                                        'signal_idx': t
+                                    }
+                                    pending_orders.append(new_order)
+                                    last_signal_idx = t
+        
+        # Einde dag update
+        equity_curve.append(equity)
+        dates_curve.append(dff['time'].iloc[-1])
 
-            if (state in rules) and valid_rng and entry_ok and time_ok:
-                ask_at_signal = row['close_ask']
-                target_dist = row['sess_range'] * CONFIG['target_range_ratio']
-                target_price = ask_at_signal + target_dist
-                units = int((current_capital / CONFIG['max_slots'] * CONFIG['leverage']) / ask_at_signal)
+    return equity_curve, dates_curve, action_log
 
-                if units >= 1:
-                    pending_orders.append({
-                        'limit_price': ask_at_signal,
-                        'target_price': target_price,
-                        'units': units,
-                        'created_time': curr_time,
-                        'active_from': curr_time + pd.Timedelta(minutes=2)
-                    })
-                    last_entry_time = curr_time
-
-        capital_history.append(current_capital)
-
-    print(f"Eind Kapitaal: €{current_capital:.2f}")
-    
-    # ==============================================================================
-    # 5. OPSLAAN & VISUALISATIE (AANGEPAST)
-    # ==============================================================================
-    
-    # Logboek opslaan
-    if action_log:
-        log_df = pd.DataFrame(action_log)
-        log_file = os.path.join(OUTPUT_DIR, "trading_log.csv")
-        log_df.to_csv(log_file, index=False)
-
-    # Grafiek met DATUMS op de X-as
-    # capital_history[1:] omdat index 0 de startwaarde is, en session_dates begint bij sessie 1
-    res_df = pd.DataFrame({
-        'Datum': session_dates,
-        'Kapitaal': capital_history[1:]
-    })
-
-    plt.figure(figsize=(12, 6))
-    
-    # Plot de lijn
-    plt.plot(res_df['Datum'], res_df['Kapitaal'], label='Account Saldo (€)', color='blue', linewidth=2)
-    plt.axhline(START_CAPITAL, color='red', linestyle='--', label='Start Kapitaal')
-
-    # Opmaak Titels
-    plt.title(f'Simulatie Resultaat\nStart: €{START_CAPITAL} | Eind: €{current_capital:.2f}', fontsize=14)
-    plt.ylabel('Account Waarde (€)')
-    plt.xlabel('Datum') # Label aangepast
-    
-    # Datum Formattering voor de X-as
-    ax = plt.gca()
-    # Toon als Dag-Maand (bijv. 12-05)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
-    # Zet een interval zodat niet elke dag er staat als het te druk wordt
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    
-    # Roteer de datums zodat ze leesbaar zijn
-    plt.gcf().autofmt_xdate()
-
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    
-    plot_file = os.path.join(OUTPUT_DIR, "equity_curve.png")
-    plt.savefig(plot_file)
-    print(f"Grafiek opgeslagen in: {plot_file}")
-    plt.close()
+# ==============================================================================
+# 4. HOOFDFUNCTIE
+# ==============================================================================
 
 if __name__ == "__main__":
-    run_simulation()
+    print("--- START NIEUWE STRATEGIE ---")
+    
+    # 1. Data ophalen
+    df_git = get_data_github()
+    df_cap = fetch_live_data_capital()
+    
+    # 2. Mergen & Processing
+    df_main = merge_and_process(df_git, df_cap)
+    
+    if df_main is not None and not df_main.empty:
+        # 3. Backtest draaien
+        eq_curve, dates, logs = run_strategy(df_main)
+        
+        # 4. CSV Opslaan
+        if logs:
+            pd.DataFrame(logs).to_csv(os.path.join(OUTPUT_DIR, "trading_log.csv"), index=False)
+            print("Trade log opgeslagen.")
+            
+        # 5. Equity Grafiek Opslaan
+        if len(dates) > 0:
+            plt.figure(figsize=(12, 6))
+            plt.plot(dates, eq_curve, color='#2980b9', linewidth=2)
+            plt.title(f'Equity Curve (Eindsaldo: €{eq_curve[-1]:.2f})', fontsize=14)
+            plt.grid(True, alpha=0.3)
+            
+            # Datum format
+            ax = plt.gca()
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
+            plt.gcf().autofmt_xdate()
+            
+            plt.savefig(os.path.join(OUTPUT_DIR, "equity_curve.png"))
+            print("Equity curve opgeslagen.")
+            
+    print("--- KLAAR ---")
