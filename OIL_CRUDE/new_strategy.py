@@ -3,12 +3,12 @@ import pandas as pd
 import numpy as np
 import os
 import matplotlib
-matplotlib.use('Agg') # Headless mode voor GitHub Actions
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import http.client
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # ==============================================================================
@@ -19,41 +19,33 @@ GITHUB_REPO = "crudeoil"
 FOLDER_PATH = "OIL_CRUDE"
 OUTPUT_DIR = "OIL_CRUDE/Trading_details"
 
-# Zorg dat de output mappen bestaan
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# CAPITALS API CREDENTIALS
 IDENTIFIER = os.environ.get("IDENTIFIER", "stijn-knoop@live.nl")
 PASSWORD = os.environ.get("PASSWORD", "Hallohallo123!")
 API_KEY = os.environ.get("X_CAP_API_KEY", "FuHgMrwvmJPAYYMp")
 
-# STRATEGIE PARAMETERS (De "Beste Settings")
-CONFIG = {
-    'RSI_PERIOD': 7,          
+# DE "GOEDE" PARAMETERS
+BEST_PARAMS = {
+    'RSI_PERIOD': 14,          
     'MA_PERIOD': 50,
     
-    # Risk Management
-    'LEVERAGE': 10,              # Hefboom
-    'MAX_CONCURRENT_TRADES': 10, # Aantal slots (Equity / 10)
-    'BATCH_COOLDOWN': 5,         # Wachttijd tussen batches (minuten)
+    'LEVERAGE': 10,              
+    'MAX_CONCURRENT_TRADES': 5, 
+    'BATCH_COOLDOWN': 10,         
     
-    # Strategie
     'WINDOW_SIZE': 40,         
     'ENTRY_THRESHOLD': 0.7,    
-    'TP_RANGE': 0.8,           
+    'TP_RANGE': 0.6,           
     'MAX_DROP': 0.6,           
     'MIN_OBS': 40              
 }
 
-START_CAPITAL = 1000.0
+START_CAPITAL = 10000.0 # Zelfde startbedrag als je test
 
 # ==============================================================================
-# 2. DATA FUNCTIES (GITHUB + CAPITAL MERGE)
+# 2. DATA FUNCTIES
 # ==============================================================================
-
-def get_now():
-    NL_TZ = pytz.timezone("Europe/Amsterdam")
-    return datetime.now(NL_TZ)
 
 def get_session_tokens():
     conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
@@ -70,9 +62,7 @@ def get_session_tokens():
 
 def fetch_live_data_capital():
     sec_token, cst = get_session_tokens()
-    if not sec_token:
-        print("Kon niet inloggen bij Capital.com")
-        return None
+    if not sec_token: return None
 
     conn = http.client.HTTPSConnection("api-capital.backend-capital.com")
     headers = {"X-SECURITY-TOKEN": sec_token, "CST": cst, "X-CAP-API-KEY": API_KEY}
@@ -91,121 +81,90 @@ def fetch_live_data_capital():
         df.columns = ["time", "open_bid", "high_bid", "low_bid", "close_bid",
                       "open_ask", "high_ask", "low_ask", "close_ask", "volume"]
         
-        df["time"] = pd.to_datetime(df["time"]).dt.tz_localize(None) # UTC Naive maken
+        df["time"] = pd.to_datetime(df["time"]).dt.tz_localize(None) 
         return df
-    except Exception as e:
-        print(f"Capital API Error: {e}")
-        return None
+    except: return None
 
 def get_data_github():
     token = os.getenv("GITHUB_TOKEN")
     headers = {"Authorization": f"token {token}"} if token else {}
     api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{FOLDER_PATH}?ref=master"
-    
     try:
         r = requests.get(api_url, headers=headers).json()
-        if isinstance(r, list):
-            csv_file = next(f for f in r if f['name'].endswith('.csv'))
-            download_url = csv_file['download_url']
-        else:
-            download_url = r['download_url']
-            
+        download_url = r[0]['download_url'] if isinstance(r, list) else r['download_url']
         df = pd.read_csv(download_url)
         df['time'] = pd.to_datetime(df['time'])
-        # Zorg dat github data ook timezone naive is voor de merge
-        if df['time'].dt.tz is not None:
-            df['time'] = df['time'].dt.tz_localize(None)
-            
+        if df['time'].dt.tz is not None: df['time'] = df['time'].dt.tz_localize(None)
         return df
-    except Exception as e:
-        print(f"Github Data Error: {e}")
-        return None
+    except: return None
 
 def merge_and_process(df_old, df_new):
     if df_old is None: return df_new
     if df_new is None: return df_old
     
-    # Merge en ontdubbelen
     df = pd.concat([df_old, df_new]).drop_duplicates(subset="time", keep="last").sort_values("time").reset_index(drop=True)
-    
-    # Resample naar 1 minuut om gaten te vullen (forward fill)
     df = df.set_index('time').resample('1min').ffill().dropna().reset_index()
     
-    # Sessies detecteren (breaks detectie)
     df['price_diff'] = df['close_bid'].diff()
     df['is_flat'] = df['price_diff'] == 0
     df['block_id'] = (df['is_flat'] != df['is_flat'].shift()).cumsum()
 
     break_blocks = []
-    # Als de prijs meer dan 45 minuten stilstaat in de nacht, is het een break
     stats = df[df['is_flat']].groupby('block_id').agg(start=('time', 'first'), count=('time', 'count'))
     for bid, row in stats.iterrows():
         if row['count'] > 45 and (row['start'].hour >= 21 or row['start'].hour <= 2):
             break_blocks.append(bid)
 
     df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
-    # Nieuwe sessie start als trading weer actief wordt na inactief
     df['new_sess'] = df['is_trading_active'] & ((df['is_trading_active'].shift(1) == False) | (df.index == 0))
     df['session_id'] = df['new_sess'].cumsum()
-    # Data buiten sessies negeren (-1)
     df.loc[~df['is_trading_active'], 'session_id'] = -1
     
-    # Mid Price & Features
+    df['hour'] = df['time'].dt.hour
     df['mid_price'] = (df['close_ask'] + df['close_bid']) / 2
     
-    # RSI
-    p_rsi = CONFIG['RSI_PERIOD']
+    # FEATURES (Exact zoals in jouw snippet)
+    p_rsi = BEST_PARAMS['RSI_PERIOD']
     delta = df['mid_price'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=p_rsi).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=p_rsi).mean()
     rs_val = gain / loss
     df[f'rsi_{p_rsi}'] = 100 - (100 / (1 + rs_val))
     
-    # Trend
-    p_ma = CONFIG['MA_PERIOD']
+    p_ma = BEST_PARAMS['MA_PERIOD']
     ma = df['mid_price'].rolling(window=p_ma).mean()
     df[f'trend_{p_ma}'] = (df['mid_price'] / ma) - 1
     
-    # Volatility
     df['vol_ratio'] = df['mid_price'].rolling(20).std() / df['mid_price'].rolling(100).std()
-    
-    # Hour
-    df['hour'] = df['time'].dt.hour
     
     return df.dropna().reset_index(drop=True)
 
 # ==============================================================================
-# 3. BACKTEST LOGICA (PENDING ORDERS)
+# 3. BACKTEST LOGICA (EXACTE KOPIE VAN JOUW WERKENDE FUNCTIE)
 # ==============================================================================
 
-def run_strategy(data):
-    # Unpack parameters
-    W_SIZE = CONFIG['WINDOW_SIZE']
-    E_THRESH = CONFIG['ENTRY_THRESHOLD']
-    TP_R = CONFIG['TP_RANGE']
-    MAX_DROP = CONFIG['MAX_DROP']
-    MIN_OBS = CONFIG['MIN_OBS']
+def run_strategy(params, data):
+    W_SIZE, E_THRESH = params['WINDOW_SIZE'], params['ENTRY_THRESHOLD']
+    TP_R, MAX_DROP   = params['TP_RANGE'], params['MAX_DROP']
+    MIN_OBS          = params['MIN_OBS']
+    MAX_TRADES = params['MAX_CONCURRENT_TRADES']
+    COOLDOWN   = params['BATCH_COOLDOWN']
+    LEVERAGE   = params['LEVERAGE']
     
-    MAX_TRADES = CONFIG['MAX_CONCURRENT_TRADES']
-    COOLDOWN = CONFIG['BATCH_COOLDOWN']
-    LEVERAGE = CONFIG['LEVERAGE']
-    
-    RSI_COL = f"rsi_{CONFIG['RSI_PERIOD']}"
-    TREND_COL = f"trend_{CONFIG['MA_PERIOD']}"
-    
-    # Bins
-    range_bins = np.linspace(0, 1.0, 6)
-    rsi_bins = [0, 30, 70, 100]
-    trend_bins = [-np.inf, -0.0005, 0.0005, np.inf]
-    vol_bins = [-np.inf, 0.9, 1.2, np.inf]
-    
-    unique_sessions = sorted(data[data['session_id'] != -1]['session_id'].unique())
+    RSI_COL = f"rsi_{params['RSI_PERIOD']}"
+    TREND_COL = f"trend_{params['MA_PERIOD']}"
     
     equity = START_CAPITAL
     equity_curve = [START_CAPITAL]
     dates_curve = [data['time'].iloc[0]]
     action_log = []
     
+    range_bins = np.linspace(0, 1.0, 6)
+    rsi_bins = [0, 30, 70, 100]
+    trend_bins = [-np.inf, -0.0005, 0.0005, np.inf]
+    vol_bins = [-np.inf, 0.9, 1.2, np.inf]
+    
+    unique_sessions = sorted(data[data['session_id'] != -1]['session_id'].unique())
     print(f"Start simulatie over {len(unique_sessions) - W_SIZE} sessies...")
     
     for i in range(W_SIZE, len(unique_sessions)):
@@ -213,7 +172,7 @@ def run_strategy(data):
         start_train = unique_sessions[i-W_SIZE]
         end_train = unique_sessions[i-1]
         
-        # --- TRAINING ---
+        # Training
         mask = (data['session_id'] >= start_train) & (data['session_id'] <= end_train)
         df_h = data[mask].copy()
         
@@ -222,7 +181,6 @@ def run_strategy(data):
         df_h['day_low'] = sess_grp['mid_price'].cummin()
         df_h['day_rng'] = df_h['day_high'] - df_h['day_low']
         
-        # Filter 0 range + Copy
         df_h = df_h[df_h['day_rng'] > 0].copy()
         
         target = df_h['mid_price'] + TP_R * df_h['day_rng']
@@ -233,7 +191,6 @@ def run_strategy(data):
         fut_min = df_h.groupby('session_id')['mid_price'].transform(lambda x: x[::-1].cummin()[::-1])
         df_h['loss'] = (fut_min <= drop_tgt).astype(int)
         
-        # Bucketing
         df_h['b_rng'] = pd.cut((df_h['mid_price'] - df_h['day_low']) / df_h['day_rng'], bins=range_bins, labels=False)
         df_h['b_rsi'] = pd.cut(df_h[RSI_COL], bins=rsi_bins, labels=False)     
         df_h['b_trd'] = pd.cut(df_h[TREND_COL], bins=trend_bins, labels=False) 
@@ -244,11 +201,10 @@ def run_strategy(data):
         valid_stats.columns = ['_'.join(col) for col in valid_stats.columns] 
         prob_map = valid_stats[['hit_mean', 'loss_mean']].to_dict('index')
         
-        # --- TRADING ---
+        # Trading
         dff = data[data['session_id'] == test_sess_id].copy().reset_index(drop=True)
         if len(dff) < 50: continue
         
-        # Arrays
         p_mid = dff['mid_price'].values
         p_ask = dff['close_ask'].values 
         p_low_ask = dff['low_ask'].values 
@@ -284,70 +240,40 @@ def run_strategy(data):
                     exit_signal = True; exit_price = p_bid[t]; reason = "EOD"
                 
                 if exit_signal:
-                    # % Verandering
                     raw_ret = (exit_price - trade['entry_price']) / trade['entry_price']
-                    # PnL = Stake * Leverage * %
                     pnl = trade['stake'] * LEVERAGE * raw_ret
-                    
-                    # Isolated Margin Check
-                    if pnl < -trade['stake']: 
-                        pnl = -trade['stake']
-                        reason = "LIQUIDATION"
+                    if pnl < -trade['stake']: pnl = -trade['stake']; reason = "LIQ"
                     
                     equity += pnl
-                    
-                    action_log.append({
-                        'time': curr_time,
-                        'session_id': test_sess_id,
-                        'action': f'EXIT_{reason}',
-                        'price': exit_price,
-                        'pnl_euro': round(pnl, 2),
-                        'capital_after': round(equity, 2)
-                    })
+                    action_log.append({'time': curr_time, 'action': f'EXIT_{reason}', 'pnl': pnl, 'equity': equity})
                     active_trades.pop(k) 
 
             # 2. PENDING ORDERS CHECK
             for k in range(len(pending_orders) - 1, -1, -1):
                 order = pending_orders[k]
+                if p_high_bid[t] >= order['target_price']:
+                    pending_orders.pop(k); continue
+                if t == len(dff) - 1:
+                    pending_orders.pop(k); continue
                 
-                # Cancel condities
-                if p_high_bid[t] >= order['target_price'] or t == len(dff) - 1:
-                    pending_orders.pop(k)
-                    continue
-                
-                # Fill logic (n+2)
                 if t >= order['signal_idx'] + 2:
                     if p_low_ask[t] <= order['limit_price']:
-                        
-                        # STAKE BEREKENING (Intraday Compounding)
-                        available_equity = max(0, equity)
-                        stake_per_trade = available_equity / MAX_TRADES
-                        
-                        if stake_per_trade > 0:
+                        stake = max(0, equity) / MAX_TRADES
+                        if stake > 0:
                             new_trade = {
                                 'entry_price': order['limit_price'],
                                 'target_price': order['target_price'],
-                                'stake': stake_per_trade,
+                                'stake': stake,
                                 'entry_time': curr_time
                             }
                             active_trades.append(new_trade)
-                            
-                            action_log.append({
-                                'time': curr_time,
-                                'session_id': test_sess_id,
-                                'action': 'ENTRY',
-                                'price': order['limit_price'],
-                                'stake': round(stake_per_trade, 2),
-                                'capital_after': round(equity, 2)
-                            })
+                            action_log.append({'time': curr_time, 'action': 'ENTRY', 'price': order['limit_price']})
                         pending_orders.pop(k)
 
             # 3. SIGNAL GENERATION
-            current_total = len(active_trades) + len(pending_orders)
-            
-            if current_total < MAX_TRADES:
+            if len(active_trades) + len(pending_orders) < MAX_TRADES:
                 if t >= last_signal_idx + COOLDOWN:
-                    if hours[t] < 22: # Geen nieuwe trades na 22:00
+                    if hours[t] < 22:
                         rng = high_cum[t] - low_cum[t]
                         if rng > 0:
                             rng_pos = (p_mid[t] - low_cum[t]) / rng
@@ -357,63 +283,37 @@ def run_strategy(data):
                             b_vl = 0 if vols[t] < 0.9 else (2 if vols[t] > 1.2 else 1)
                             
                             key = (hours[t], b_r, b_rs, b_tr, b_vl)
-                            
                             if key in prob_map:
                                 stats = prob_map[key]
                                 if stats['hit_mean'] >= E_THRESH and stats['loss_mean'] <= MAX_DROP:
                                     limit_pr = p_ask[t]
                                     target_pr = limit_pr + (TP_R * rng)
-                                    
-                                    new_order = {
-                                        'limit_price': limit_pr,
-                                        'target_price': target_pr,
-                                        'signal_idx': t
-                                    }
-                                    pending_orders.append(new_order)
+                                    pending_orders.append({
+                                        'limit_price': limit_pr, 'target_price': target_pr, 'signal_idx': t
+                                    })
                                     last_signal_idx = t
         
-        # Einde dag update
         equity_curve.append(equity)
         dates_curve.append(dff['time'].iloc[-1])
 
     return equity_curve, dates_curve, action_log
 
-# ==============================================================================
-# 4. HOOFDFUNCTIE
-# ==============================================================================
-
 if __name__ == "__main__":
-    print("--- START NIEUWE STRATEGIE ---")
-    
-    # 1. Data ophalen
     df_git = get_data_github()
     df_cap = fetch_live_data_capital()
-    
-    # 2. Mergen & Processing
     df_main = merge_and_process(df_git, df_cap)
     
     if df_main is not None and not df_main.empty:
-        # 3. Backtest draaien
-        eq_curve, dates, logs = run_strategy(df_main)
+        eq_curve, dates, logs = run_strategy(BEST_PARAMS, df_main)
         
-        # 4. CSV Opslaan
         if logs:
             pd.DataFrame(logs).to_csv(os.path.join(OUTPUT_DIR, "trading_log.csv"), index=False)
-            print("Trade log opgeslagen.")
             
-        # 5. Equity Grafiek Opslaan
         if len(dates) > 0:
             plt.figure(figsize=(12, 6))
             plt.plot(dates, eq_curve, color='#2980b9', linewidth=2)
             plt.title(f'Equity Curve (Eindsaldo: €{eq_curve[-1]:.2f})', fontsize=14)
             plt.grid(True, alpha=0.3)
-            
-            # Datum format
-            ax = plt.gca()
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
+            ax = plt.gca(); ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m'))
             plt.gcf().autofmt_xdate()
-            
             plt.savefig(os.path.join(OUTPUT_DIR, "equity_curve.png"))
-            print("Equity curve opgeslagen.")
-            
-    print("--- KLAAR ---")
