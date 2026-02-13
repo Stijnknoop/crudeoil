@@ -19,7 +19,6 @@ PLOT_DIR = os.path.join(OUTPUT_DIR, "plots")
 os.makedirs(PLOT_DIR, exist_ok=True)
 
 def generate_daily_plots(data):
-    # Unpack parameters
     W_SIZE = BEST_PARAMS['WINDOW_SIZE']
     E_THRESH = BEST_PARAMS['ENTRY_THRESHOLD']
     TP_R = BEST_PARAMS['TP_RANGE']
@@ -52,7 +51,6 @@ def generate_daily_plots(data):
         df_h['day_high'] = sess_grp['mid_price'].cummax()
         df_h['day_low'] = sess_grp['mid_price'].cummin()
         df_h['day_rng'] = df_h['day_high'] - df_h['day_low']
-        
         df_h = df_h[df_h['day_rng'] > 0].copy()
         
         target = df_h['mid_price'] + TP_R * df_h['day_rng']
@@ -77,7 +75,7 @@ def generate_daily_plots(data):
         dff = data[data['session_id'] == test_sess_id].copy().reset_index(drop=True)
         if len(dff) < 50: continue
         
-        # FIX VOOR KEYERROR: Bereken stats lokaal voor visualisatie
+        # BEREKEN DAG STATS VOOR VISUALISATIE
         dff['day_high'] = dff['mid_price'].cummax()
         dff['day_low'] = dff['mid_price'].cummin()
         dff['day_rng'] = dff['day_high'] - dff['day_low']
@@ -88,6 +86,8 @@ def generate_daily_plots(data):
         active_trades = []   
         pending_orders = []  
         last_signal_idx = -999 
+        
+        day_pnl = 0.0
         
         for t in range(50, len(dff)):
             curr_time = dff['time'].iloc[t]
@@ -109,7 +109,12 @@ def generate_daily_plots(data):
                     exit_signal = True; exit_price = p_bid
                 
                 if exit_signal:
-                    pnl = (exit_price - trade['entry_price']) / trade['entry_price']
+                    raw_ret = (exit_price - trade['entry_price']) / trade['entry_price']
+                    # Dummy Stake (1000/10 = 100) * Leverage (10) = 1000 effectief
+                    # PnL = 1000 * %
+                    pnl = 1000 * raw_ret 
+                    day_pnl += pnl
+                    
                     viz_events.append({'t': curr_time, 'type': 'WIN' if pnl > 0 else 'LOSS', 'price': exit_price})
                     viz_lines.append({'type': 'trade', 'pnl': pnl, 't0': trade['entry_time'], 'p0': trade['entry_price'], 't1': curr_time, 'p1': exit_price})
                     active_trades.pop(k)
@@ -157,8 +162,11 @@ def generate_daily_plots(data):
 
         if viz_lines or viz_events:
             date_str = dff['time'].iloc[0].strftime('%Y-%m-%d')
+            # PnL % berekenen o.b.v. dummy startkapitaal (1000)
+            pnl_pct = (day_pnl / 1000.0) * 100
+            
             fig, ax = plt.subplots(figsize=(14, 6))
-            ax.plot(dff['time'], dff['mid_price'], color='black', alpha=0.6, lw=1)
+            ax.plot(dff['time'], dff['mid_price'], color='black', alpha=0.6, lw=1, label='Koers')
             
             seg_pending = [[(mdates.date2num(l['t0']), l['p0']), (mdates.date2num(l['t1']), l['p1'])] for l in viz_lines if l['type'] == 'pending']
             seg_wins = [[(mdates.date2num(l['t0']), l['p0']), (mdates.date2num(l['t1']), l['p1'])] for l in viz_lines if l['type'] == 'trade' and l['pnl'] > 0]
@@ -173,7 +181,21 @@ def generate_daily_plots(data):
                 m = 'o' if e['type'] == 'SIGNAL' else ('x' if e['type'] == 'MISSED' else ('^' if e['type'] == 'FILL' else 'v'))
                 ax.scatter(e['t'], e['price'], color=c, marker=m, s=80, zorder=5, edgecolors='k')
 
-            ax.set_title(f"Sessie {test_sess_id} | {date_str}", fontweight='bold')
+            # TITEL MET PNL
+            title_color = 'green' if day_pnl > 0 else ('red' if day_pnl < 0 else 'black')
+            ax.set_title(f"Sessie {test_sess_id} | {date_str} | PnL: €{day_pnl:.2f} ({pnl_pct:.2f}%)", fontweight='bold', color=title_color)
+            
+            # LEGENDA
+            legend_elements = [
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='gold', label='Signaal'),
+                Line2D([0], [0], color='gold', linestyle=':', label='Pending Order'),
+                Line2D([0], [0], marker='^', color='w', markerfacecolor='green', label='Gevuld'),
+                Line2D([0], [0], color='lime', label='Winst Trade'),
+                Line2D([0], [0], color='red', label='Verlies Trade'),
+                Line2D([0], [0], marker='x', color='w', markerfacecolor='purple', label='Gemist'),
+            ]
+            ax.legend(handles=legend_elements, loc='upper right')
+
             ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
             plt.savefig(os.path.join(PLOT_DIR, f"daily_plot_{date_str}.png"))
             plt.close()
