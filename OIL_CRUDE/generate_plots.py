@@ -8,35 +8,21 @@ import matplotlib.dates as mdates
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
 
-# Deel de code door de main file te importeren, OF kopieer de data-logica
-# Voor het gemak (GitHub Actions) kopieer ik de essentiële logica hieronder, 
-# zodat dit script ook standalone kan draaien.
+# Importeer functies uit new_strategy.py
+# Zorg dat beide bestanden in dezelfde map staan of dat python path goed staat
+try:
+    from new_strategy import get_data_github, fetch_live_data_capital, merge_and_process, CONFIG
+except ImportError:
+    # Fallback als import niet werkt (bijv. andere map structuur in CI/CD)
+    # Definieer dummy of kopieer code. Voor nu gaan we uit van correcte import of copy-paste.
+    # Als je dit script los draait zonder new_strategy.py in de buurt, moet je de functies hierboven kopiëren.
+    print("LET OP: Kon new_strategy niet importeren. Zorg dat het bestand in dezelfde map staat.")
+    exit(1)
 
 # CONFIG
 OUTPUT_DIR = "OIL_CRUDE/Trading_details"
 PLOT_DIR = os.path.join(OUTPUT_DIR, "plots")
 os.makedirs(PLOT_DIR, exist_ok=True)
-
-# PARAMETERS (Zelfde als main script)
-CONFIG = {
-    'RSI_PERIOD': 7,          
-    'MA_PERIOD': 50,
-    'LEVERAGE': 10,              
-    'MAX_CONCURRENT_TRADES': 10, 
-    'BATCH_COOLDOWN': 5,         
-    'WINDOW_SIZE': 40,         
-    'ENTRY_THRESHOLD': 0.7,    
-    'TP_RANGE': 0.8,           
-    'MAX_DROP': 0.6,           
-    'MIN_OBS': 40              
-}
-
-# HIERONDER PRECIES DEZELFDE FUNCTIES ALS IN HET VORIGE SCRIPT
-# (Data ophalen, features, training) - Voor beknoptheid laat ik ze hier weg in de uitleg,
-# MAAR JE MOET ZE WEL KOPIEREN uit de new_strategy.py hierboven.
-# Of je kunt new_strategy importeren als module: `from new_strategy import get_data_github, merge_and_process, CONFIG...`
-
-from new_strategy import get_data_github, fetch_live_data_capital, merge_and_process, CONFIG
 
 def generate_daily_plots(data):
     # Unpack parameters
@@ -100,9 +86,15 @@ def generate_daily_plots(data):
         dff = data[data['session_id'] == test_sess_id].copy().reset_index(drop=True)
         if len(dff) < 50: continue
         
+        # --- FIX: DAG STATS BEREKENEN VOOR DEZE DAG ---
+        dff['day_high'] = dff['mid_price'].cummax()
+        dff['day_low'] = dff['mid_price'].cummin()
+        dff['day_rng'] = dff['day_high'] - dff['day_low']
+        dff['day_rng'] = dff['day_rng'].replace(0, 1e-9) # Voorkom deling door nul
+        
         # Visualisatie Arrays
-        viz_lines = [] # {type, t0, p0, t1, p1, pnl}
-        viz_events = [] # {type, t, p}
+        viz_lines = [] 
+        viz_events = [] 
         
         active_trades = []   
         pending_orders = []  
@@ -110,6 +102,7 @@ def generate_daily_plots(data):
         
         day_pnl = 0.0
         
+        # Loop door de dag
         for t in range(50, len(dff)):
             curr_time = dff['time'].iloc[t]
             row = dff.iloc[t]
@@ -132,7 +125,7 @@ def generate_daily_plots(data):
                 
                 if exit_signal:
                     raw_ret = (exit_price - trade['entry_price']) / trade['entry_price']
-                    pnl = 100 * 10 * raw_ret # Dummy stake voor visualisatie PnL
+                    pnl = 100 * 10 * raw_ret # Dummy PnL voor visualisatie
                     day_pnl += pnl
                     
                     viz_events.append({'t': curr_time, 'type': 'WIN' if pnl > 0 else 'LOSS', 'price': exit_price})
@@ -177,26 +170,43 @@ def generate_daily_plots(data):
             if len(active_trades) + len(pending_orders) < MAX_TRADES:
                 if t >= last_signal_idx + COOLDOWN:
                     if row['hour'] < 22:
-                        # ... (RSI/MA check hier kopiëren of aannemen dat df al features heeft) ...
-                        # Aanname: df heeft al de juiste features berekend in merge_and_process
                         
-                        # Omdat we hier loopen met row, kunnen we direct checken
-                        # Let op: de features moeten exact matchen met de training
-                        # Dit is complex om 1-op-1 te kopiëren zonder fouten.
-                        # Beter is om de signaal logica te encapsuleren.
-                        
-                        # Voor visualisatie simplificatie:
-                        # We doen de bucket lookup
+                        # --- HIER WAS DE FOUT: Nu gebruiken we de correct berekende kolommen ---
                         rng_pos = (row['mid_price'] - row['day_low']) / row['day_rng']
                         b_r = min(int(rng_pos * 5), 4)
-                        # ... etc (deze logica moet exact zijn) ...
                         
-                        # Omdat dit script eigenlijk de backtest nabootst, is het beter
-                        # om de trades_log uit de backtest op te slaan en die te plotten
-                        # in plaats van alles opnieuw te berekenen.
+                        # Features uit row halen (zorg dat deze matchen met new_strategy.py)
+                        # We nemen aan dat df_raw (en dus row) al deze kolommen heeft door merge_and_process
                         
-                        # MAAR, als je per se aparte scripts wilt:
-                        pass # (Hier zou de signaal logica staan)
+                        # Bucket RSI
+                        val_rsi = row[RSI_COL]
+                        b_rs = 0 if val_rsi < 30 else (2 if val_rsi > 70 else 1)
+                        
+                        # Bucket Trend
+                        val_trd = row[TREND_COL]
+                        b_tr = 0 if val_trd < -0.0005 else (2 if val_trd > 0.0005 else 1)
+                        
+                        # Bucket Vol
+                        val_vol = row['vol_ratio']
+                        b_vl = 0 if val_vol < 0.9 else (2 if val_vol > 1.2 else 1)
+                        
+                        key = (row['hour'], b_r, b_rs, b_tr, b_vl)
+                        
+                        if key in prob_map:
+                            stats = prob_map[key]
+                            if stats['hit_mean'] >= E_THRESH and stats['loss_mean'] <= MAX_DROP:
+                                limit_pr = p_ask
+                                target_pr = limit_pr + (TP_R * row['day_rng'])
+                                
+                                new_order = {
+                                    'limit_price': limit_pr,
+                                    'target_price': target_pr,
+                                    'signal_idx': t,
+                                    'signal_time': curr_time
+                                }
+                                pending_orders.append(new_order)
+                                last_signal_idx = t
+                                viz_events.append({'t': curr_time, 'type': 'SIGNAL', 'price': limit_pr})
 
         # --- PLOTTEN ---
         # Alleen plotten als er iets gebeurde
@@ -211,9 +221,9 @@ def generate_daily_plots(data):
             seg_wins = [[(mdates.date2num(l['t0']), l['p0']), (mdates.date2num(l['t1']), l['p1'])] for l in viz_lines if l['type'] == 'trade' and l['pnl'] > 0]
             seg_loss = [[(mdates.date2num(l['t0']), l['p0']), (mdates.date2num(l['t1']), l['p1'])] for l in viz_lines if l['type'] == 'trade' and l['pnl'] <= 0]
             
-            ax.add_collection(LineCollection(seg_pending, colors='gold', linestyles=':', linewidths=2))
-            ax.add_collection(LineCollection(seg_wins, colors='lime', linewidths=2))
-            ax.add_collection(LineCollection(seg_loss, colors='red', linewidths=2))
+            if seg_pending: ax.add_collection(LineCollection(seg_pending, colors='gold', linestyles=':', linewidths=2))
+            if seg_wins: ax.add_collection(LineCollection(seg_wins, colors='lime', linewidths=2))
+            if seg_loss: ax.add_collection(LineCollection(seg_loss, colors='red', linewidths=2))
             
             # Events
             for e in viz_events:
@@ -223,6 +233,7 @@ def generate_daily_plots(data):
 
             ax.set_title(f"Sessie {test_sess_id} | {date_str}", fontweight='bold')
             ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            ax.grid(True, alpha=0.2)
             
             plt.savefig(os.path.join(PLOT_DIR, f"daily_plot_{date_str}.png"))
             plt.close()
@@ -234,3 +245,4 @@ if __name__ == "__main__":
     
     if df_main is not None:
         generate_daily_plots(df_main)
+        
