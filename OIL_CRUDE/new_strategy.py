@@ -91,6 +91,7 @@ def get_data_github():
     api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{FOLDER_PATH}?ref=master"
     try:
         r = requests.get(api_url, headers=headers).json()
+        # Fallback list logic
         if isinstance(r, list):
             csv_file = next((f for f in r if f['name'].endswith('.csv')), None)
             if not csv_file: return None
@@ -109,12 +110,14 @@ def get_data_github():
         return None
 
 def merge_and_process(df1, df2):
+    # Stap 1: Mergen (Data samenvoegen)
     if df1 is None and df2 is None: return None
     if df1 is None: df = df2.copy()
     elif df2 is None: df = df1.copy()
     else:
         df = pd.concat([df1, df2]).drop_duplicates(subset="time", keep="last").sort_values("time").reset_index(drop=True)
     
+    # Stap 2: Resample en Sessie Logica
     df = df.set_index('time').sort_index()
     df = df[~df.index.duplicated(keep='first')]
     df = df.resample('1min').ffill().dropna().reset_index()
@@ -134,6 +137,7 @@ def merge_and_process(df1, df2):
     df['session_id'] = df['new_sess'].cumsum()
     df.loc[~df['is_trading_active'], 'session_id'] = -1
     
+    # Stap 3: Features Toevoegen
     df['hour'] = df['time'].dt.hour
     df['mid_price'] = (df['close_ask'] + df['close_bid']) / 2
     
@@ -153,7 +157,7 @@ def merge_and_process(df1, df2):
     return df.dropna().reset_index(drop=True)
 
 # ==============================================================================
-# 3. BACKTEST LOGICA
+# 3. BACKTEST LOGICA (MET 22:00 HARD EXIT)
 # ==============================================================================
 
 def run_strategy(params, data):
@@ -168,8 +172,6 @@ def run_strategy(params, data):
     TREND_COL = f"trend_{params['MA_PERIOD']}"
     
     equity = START_CAPITAL
-    
-    # AANPASSING: Start met lege lijsten zodat we pas plotten vanaf trade start
     equity_curve = [] 
     dates_curve = []
     
@@ -243,17 +245,18 @@ def run_strategy(params, data):
         for t in range(50, len(dff)):
             curr_time = times[t]
             
-            # 1. EXITS
+            # 1. EXITS (Check 22:00 HARD CLOSE)
             for k in range(len(active_trades) - 1, -1, -1):
                 trade = active_trades[k]
                 exit_signal = False
                 reason = ""
                 exit_price = 0.0
                 
+                # Exit condities
                 if p_high_bid[t] >= trade['target_price']:
                     exit_signal = True; exit_price = trade['target_price']; reason = "TP"
-                elif t == len(dff) - 1:
-                    exit_signal = True; exit_price = p_bid[t]; reason = "EOD"
+                elif hours[t] >= 22 or t == len(dff) - 1:
+                    exit_signal = True; exit_price = p_bid[t]; reason = "TIME"
                 
                 if exit_signal:
                     raw_ret = (exit_price - trade['entry_price']) / trade['entry_price']
@@ -264,12 +267,15 @@ def run_strategy(params, data):
                     action_log.append({'time': curr_time, 'action': f'EXIT_{reason}', 'pnl': pnl, 'equity': equity})
                     active_trades.pop(k) 
 
-            # 2. FILLS
+            # 2. FILLS & CANCELS (Check 22:00 HARD CANCEL)
             for k in range(len(pending_orders) - 1, -1, -1):
                 order = pending_orders[k]
+                
                 if p_high_bid[t] >= order['target_price']:
                     pending_orders.pop(k); continue
-                if t == len(dff) - 1:
+                
+                # Cancel na 22:00 of EOD
+                if hours[t] >= 22 or t == len(dff) - 1:
                     pending_orders.pop(k); continue
                 
                 if t >= order['signal_idx'] + 2:
@@ -286,7 +292,7 @@ def run_strategy(params, data):
                             action_log.append({'time': curr_time, 'action': 'ENTRY', 'price': order['limit_price']})
                         pending_orders.pop(k)
 
-            # 3. SIGNALS
+            # 3. SIGNALS (Alleen voor 22:00)
             if len(active_trades) + len(pending_orders) < MAX_TRADES:
                 if t >= last_signal_idx + COOLDOWN:
                     if hours[t] < 22:
@@ -309,7 +315,7 @@ def run_strategy(params, data):
                                     })
                                     last_signal_idx = t
         
-        # AANPASSING: Voeg pas toe aan het einde van een HANDELSDAG
+        # Voeg alleen handelsdagen toe aan de curve
         equity_curve.append(equity)
         dates_curve.append(dff['time'].iloc[-1])
 
@@ -326,12 +332,13 @@ if __name__ == "__main__":
         
         if logs:
             pd.DataFrame(logs).to_csv(os.path.join(OUTPUT_DIR, "trading_log.csv"), index=False)
+            print("Trade log opgeslagen.")
             
         if len(dates) > 0:
             plt.figure(figsize=(12, 6))
-            # Plak de startwaarde er wel vóór voor een mooie grafiek, maar dan op de datum van de eerste trading sessie
+            # Plak startpunt voor de curve (visueel)
             if dates:
-                start_date = dates[0] - timedelta(days=1) 
+                start_date = dates[0] - timedelta(days=1)
                 dates = [start_date] + dates
                 eq_curve = [START_CAPITAL] + eq_curve
 
