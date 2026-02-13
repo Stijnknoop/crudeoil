@@ -19,6 +19,7 @@ PLOT_DIR = os.path.join(OUTPUT_DIR, "plots")
 os.makedirs(PLOT_DIR, exist_ok=True)
 
 def generate_daily_plots(data):
+    # Unpack parameters
     W_SIZE = BEST_PARAMS['WINDOW_SIZE']
     E_THRESH = BEST_PARAMS['ENTRY_THRESHOLD']
     TP_R = BEST_PARAMS['TP_RANGE']
@@ -51,6 +52,7 @@ def generate_daily_plots(data):
         df_h['day_high'] = sess_grp['mid_price'].cummax()
         df_h['day_low'] = sess_grp['mid_price'].cummin()
         df_h['day_rng'] = df_h['day_high'] - df_h['day_low']
+        
         df_h = df_h[df_h['day_rng'] > 0].copy()
         
         target = df_h['mid_price'] + TP_R * df_h['day_rng']
@@ -75,7 +77,6 @@ def generate_daily_plots(data):
         dff = data[data['session_id'] == test_sess_id].copy().reset_index(drop=True)
         if len(dff) < 50: continue
         
-        # BEREKEN DAG STATS VOOR VISUALISATIE
         dff['day_high'] = dff['mid_price'].cummax()
         dff['day_low'] = dff['mid_price'].cummin()
         dff['day_rng'] = dff['day_high'] - dff['day_low']
@@ -98,34 +99,34 @@ def generate_daily_plots(data):
             p_low_ask = row['low_ask']
             p_ask = row['close_ask']
             
-            # Active Trades
+            # Active Trades (EXIT 22:00)
             for k in range(len(active_trades) - 1, -1, -1):
                 trade = active_trades[k]
                 exit_signal = False; exit_price = 0.0
                 
                 if p_high_bid >= trade['target_price']:
                     exit_signal = True; exit_price = trade['target_price']
-                elif t == len(dff) - 1:
+                elif curr_time.hour >= 22 or t == len(dff) - 1:
                     exit_signal = True; exit_price = p_bid
                 
                 if exit_signal:
                     raw_ret = (exit_price - trade['entry_price']) / trade['entry_price']
-                    # Dummy Stake (1000/10 = 100) * Leverage (10) = 1000 effectief
-                    # PnL = 1000 * %
-                    pnl = 1000 * raw_ret 
+                    pnl = 1000 * raw_ret # Dummy stake voor PnL display
                     day_pnl += pnl
                     
                     viz_events.append({'t': curr_time, 'type': 'WIN' if pnl > 0 else 'LOSS', 'price': exit_price})
                     viz_lines.append({'type': 'trade', 'pnl': pnl, 't0': trade['entry_time'], 'p0': trade['entry_price'], 't1': curr_time, 'p1': exit_price})
                     active_trades.pop(k)
 
-            # Pending
+            # Pending (CANCEL 22:00)
             for k in range(len(pending_orders) - 1, -1, -1):
                 order = pending_orders[k]
+                
                 if p_high_bid >= order['target_price']:
                     viz_events.append({'t': curr_time, 'type': 'MISSED', 'price': order['target_price']})
                     pending_orders.pop(k); continue
-                if t == len(dff) - 1:
+                
+                if curr_time.hour >= 22 or t == len(dff) - 1:
                     pending_orders.pop(k); continue
                 
                 if t >= order['signal_idx'] + 2:
@@ -138,7 +139,7 @@ def generate_daily_plots(data):
             # Signal
             if len(active_trades) + len(pending_orders) < MAX_TRADES:
                 if t >= last_signal_idx + COOLDOWN:
-                    if row['hour'] < 22:
+                    if curr_time.hour < 22:
                         rng_pos = (row['mid_price'] - row['day_low']) / row['day_rng']
                         b_r = min(int(rng_pos * 5), 4)
                         
@@ -149,7 +150,7 @@ def generate_daily_plots(data):
                         val_vol = row['vol_ratio']
                         b_vl = 0 if val_vol < 0.9 else (2 if val_vol > 1.2 else 1)
                         
-                        key = (row['hour'], b_r, b_rs, b_tr, b_vl)
+                        key = (curr_time.hour, b_r, b_rs, b_tr, b_vl)
                         
                         if key in prob_map:
                             stats = prob_map[key]
@@ -162,7 +163,6 @@ def generate_daily_plots(data):
 
         if viz_lines or viz_events:
             date_str = dff['time'].iloc[0].strftime('%Y-%m-%d')
-            # PnL % berekenen o.b.v. dummy startkapitaal (1000)
             pnl_pct = (day_pnl / 1000.0) * 100
             
             fig, ax = plt.subplots(figsize=(14, 6))
@@ -181,11 +181,9 @@ def generate_daily_plots(data):
                 m = 'o' if e['type'] == 'SIGNAL' else ('x' if e['type'] == 'MISSED' else ('^' if e['type'] == 'FILL' else 'v'))
                 ax.scatter(e['t'], e['price'], color=c, marker=m, s=80, zorder=5, edgecolors='k')
 
-            # TITEL MET PNL
             title_color = 'green' if day_pnl > 0 else ('red' if day_pnl < 0 else 'black')
             ax.set_title(f"Sessie {test_sess_id} | {date_str} | PnL: €{day_pnl:.2f} ({pnl_pct:.2f}%)", fontweight='bold', color=title_color)
             
-            # LEGENDA
             legend_elements = [
                 Line2D([0], [0], marker='o', color='w', markerfacecolor='gold', label='Signaal'),
                 Line2D([0], [0], color='gold', linestyle=':', label='Pending Order'),
