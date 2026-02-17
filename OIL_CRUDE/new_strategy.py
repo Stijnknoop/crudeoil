@@ -25,7 +25,7 @@ IDENTIFIER = os.environ.get("IDENTIFIER", "stijn-knoop@live.nl")
 PASSWORD = os.environ.get("PASSWORD", "Hallohallo123!")
 API_KEY = os.environ.get("X_CAP_API_KEY", "FuHgMrwvmJPAYYMp")
 
-# BESTE SETTINGS (1-op-1 overgenomen van jouw working script)
+# BESTE SETTINGS
 BEST_PARAMS = {
     'RSI_PERIOD': 14,          
     'MA_PERIOD': 50,
@@ -38,7 +38,11 @@ BEST_PARAMS = {
     'ENTRY_THRESHOLD': 0.7,    
     'TP_RANGE': 0.6,            
     'MAX_DROP': 0.6,            
-    'MIN_OBS': 40              
+    'MIN_OBS': 40,
+
+    # NIEUW: Risk Management
+    'BREAKEVEN_TRIGGER': 0.5,   # Bij 50% winst -> Zet Stop Loss op Entry
+    'ADX_THRESHOLD': 20         # Alleen traden als trendsterkte > 20 is
 }
 
 START_CAPITAL = 10000.0
@@ -108,6 +112,33 @@ def get_data_github():
         print(f"Github error: {e}")
         return None
 
+def calculate_adx(df, period=14):
+    """Berekent de Average Directional Index (ADX) voor trendsterkte."""
+    df = df.copy()
+    df['up_move'] = df['high_bid'] - df['high_bid'].shift(1)
+    df['down_move'] = df['low_bid'].shift(1) - df['low_bid']
+    
+    df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
+    df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
+    
+    df['tr'] = np.maximum(
+        df['high_bid'] - df['low_bid'],
+        np.maximum(
+            abs(df['high_bid'] - df['close_bid'].shift(1)),
+            abs(df['low_bid'] - df['close_bid'].shift(1))
+        )
+    )
+    
+    df['atr'] = df['tr'].rolling(period).mean()
+    
+    df['plus_di'] = 100 * (df['plus_dm'].rolling(period).mean() / df['atr'])
+    df['minus_di'] = 100 * (df['minus_dm'].rolling(period).mean() / df['atr'])
+    
+    df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
+    df['adx'] = df['dx'].rolling(period).mean()
+    
+    return df['adx'].fillna(0)
+
 def merge_and_process(df1, df2):
     if df1 is None and df2 is None: return None
     if df1 is None: df = df2.copy()
@@ -126,14 +157,10 @@ def merge_and_process(df1, df2):
     break_blocks = []
     stats = df[df['is_flat']].groupby('block_id').agg(start=('time', 'first'), count=('time', 'count'))
     
-    # === AANPASSING HIERONDER ===
-    # Oude logica: (row['start'].hour >= 21 or row['start'].hour <= 2)
-    # Nieuwe logica: We verruimen dit naar >= 16:00 om ook vroege sluitingen (19:00 etc) te vangen.
-    # We behouden de eis dat het blok > 45 minuten moet duren.
+    # Sessie-fix: Vroege sluitingen meenemen (16:00+)
     for bid, row in stats.iterrows():
         if row['count'] > 45 and (row['start'].hour >= 16 or row['start'].hour <= 3):
             break_blocks.append(bid)
-    # ============================
 
     df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
     df['new_sess'] = df['is_trading_active'] & ((df['is_trading_active'].shift(1) == False) | (df.index == 0))
@@ -143,6 +170,7 @@ def merge_and_process(df1, df2):
     df['hour'] = df['time'].dt.hour
     df['mid_price'] = (df['close_ask'] + df['close_bid']) / 2
     
+    # Indicatoren
     p_rsi = BEST_PARAMS['RSI_PERIOD']
     delta = df['mid_price'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=p_rsi).mean()
@@ -156,10 +184,13 @@ def merge_and_process(df1, df2):
     
     df['vol_ratio'] = df['mid_price'].rolling(20).std() / df['mid_price'].rolling(100).std()
     
+    # NIEUW: ADX Berekenen voor trendfilter
+    df['adx'] = calculate_adx(df)
+    
     return df.dropna().reset_index(drop=True)
 
 # ==============================================================================
-# 3. BACKTEST LOGICA
+# 3. BACKTEST LOGICA (MET BREAKEVEN & ADX)
 # ==============================================================================
 
 def run_strategy(params, data):
@@ -170,14 +201,15 @@ def run_strategy(params, data):
     COOLDOWN   = params['BATCH_COOLDOWN']
     LEVERAGE   = params['LEVERAGE']
     
+    BE_TRIGGER = params.get('BREAKEVEN_TRIGGER', 0.5)
+    ADX_THRESH = params.get('ADX_THRESHOLD', 20)
+    
     RSI_COL = f"rsi_{params['RSI_PERIOD']}"
     TREND_COL = f"trend_{params['MA_PERIOD']}"
     
     equity = START_CAPITAL
-    
     equity_curve = [] 
     dates_curve = []
-    
     action_log = []
     
     range_bins = np.linspace(0, 1.0, 6)
@@ -193,7 +225,7 @@ def run_strategy(params, data):
         start_train = unique_sessions[i-W_SIZE]
         end_train = unique_sessions[i-1]
         
-        # Training
+        # --- Training ---
         mask = (data['session_id'] >= start_train) & (data['session_id'] <= end_train)
         df_h = data[mask].copy()
         
@@ -222,7 +254,7 @@ def run_strategy(params, data):
         valid_stats.columns = ['_'.join(col) for col in valid_stats.columns] 
         prob_map = valid_stats[['hit_mean', 'loss_mean']].to_dict('index')
         
-        # Trading
+        # --- Trading ---
         dff = data[data['session_id'] == test_sess_id].copy().reset_index(drop=True)
         if len(dff) < 50: continue
         
@@ -237,6 +269,7 @@ def run_strategy(params, data):
         rsis = dff[RSI_COL].values 
         trends = dff[TREND_COL].values
         vols = dff['vol_ratio'].values
+        adxs = dff['adx'].values # ADX waarden
         
         high_cum = np.maximum.accumulate(p_mid)
         low_cum = np.minimum.accumulate(p_mid)
@@ -248,36 +281,52 @@ def run_strategy(params, data):
         for t in range(50, len(dff)):
             curr_time = times[t]
             
-            # 1. EXITS (Check 22:00 HARD CLOSE)
+            # 1. EXITS (Check TP, Breakeven & Time)
             for k in range(len(active_trades) - 1, -1, -1):
                 trade = active_trades[k]
                 exit_signal = False
                 reason = ""
                 exit_price = 0.0
                 
-                # Exit condities
+                # A. Take Profit Check
                 if p_high_bid[t] >= trade['target_price']:
                     exit_signal = True; exit_price = trade['target_price']; reason = "TP"
+                
+                # B. Breakeven Exit Check (Alleen als BE actief is)
+                elif trade['be_active'] and p_low_ask[t] <= trade['entry_price']:
+                    exit_signal = True; exit_price = trade['entry_price']; reason = "BE"
+                
+                # C. Time / Hard Close Check
                 elif hours[t] >= 22 or t == len(dff) - 1:
                     exit_signal = True; exit_price = p_bid[t]; reason = "TIME"
                 
                 if exit_signal:
+                    # PnL berekening
                     raw_ret = (exit_price - trade['entry_price']) / trade['entry_price']
                     pnl = trade['stake'] * LEVERAGE * raw_ret
+                    
+                    # Liquidation check (je kunt niet meer verliezen dan inleg)
                     if pnl < -trade['stake']: pnl = -trade['stake']; reason = "LIQ"
                     
                     equity += pnl
                     action_log.append({'time': curr_time, 'action': f'EXIT_{reason}', 'pnl': pnl, 'equity': equity})
-                    active_trades.pop(k) 
+                    active_trades.pop(k)
+                else:
+                    # D. Update Breakeven Status (Voor de VOLGENDE candle)
+                    # Als de prijs X% richting target is gegaan, zet BE op True
+                    dist_to_target = trade['target_price'] - trade['entry_price']
+                    be_trigger_price = trade['entry_price'] + (dist_to_target * BE_TRIGGER)
+                    
+                    if p_high_bid[t] >= be_trigger_price:
+                        active_trades[k]['be_active'] = True
 
-            # 2. FILLS & CANCELS (Check 22:00 HARD CANCEL)
+            # 2. FILLS & CANCELS
             for k in range(len(pending_orders) - 1, -1, -1):
                 order = pending_orders[k]
                 
                 if p_high_bid[t] >= order['target_price']:
                     pending_orders.pop(k); continue
                 
-                # Cancel na 22:00 of EOD
                 if hours[t] >= 22 or t == len(dff) - 1:
                     pending_orders.pop(k); continue
                 
@@ -289,34 +338,39 @@ def run_strategy(params, data):
                                 'entry_price': order['limit_price'],
                                 'target_price': order['target_price'],
                                 'stake': stake,
-                                'entry_time': curr_time
+                                'entry_time': curr_time,
+                                'be_active': False # Nieuwe trade begint zonder BE
                             }
                             active_trades.append(new_trade)
                             action_log.append({'time': curr_time, 'action': 'ENTRY', 'price': order['limit_price']})
                         pending_orders.pop(k)
 
-            # 3. SIGNALS (Alleen voor 22:00)
+            # 3. SIGNALS (Nu met ADX Filter)
             if len(active_trades) + len(pending_orders) < MAX_TRADES:
                 if t >= last_signal_idx + COOLDOWN:
                     if hours[t] < 22:
-                        rng = high_cum[t] - low_cum[t]
-                        if rng > 0:
-                            rng_pos = (p_mid[t] - low_cum[t]) / rng
-                            b_r = min(int(rng_pos * 5), 4)
-                            b_rs = 0 if rsis[t] < 30 else (2 if rsis[t] > 70 else 1)
-                            b_tr = 0 if trends[t] < -0.0005 else (2 if trends[t] > 0.0005 else 1)
-                            b_vl = 0 if vols[t] < 0.9 else (2 if vols[t] > 1.2 else 1)
+                        
+                        # NIEUW: ADX Filter (Alleen traden als er trend is)
+                        if adxs[t] > ADX_THRESH:
                             
-                            key = (hours[t], b_r, b_rs, b_tr, b_vl)
-                            if key in prob_map:
-                                stats = prob_map[key]
-                                if stats['hit_mean'] >= E_THRESH and stats['loss_mean'] <= MAX_DROP:
-                                    limit_pr = p_ask[t]
-                                    target_pr = limit_pr + (TP_R * rng)
-                                    pending_orders.append({
-                                        'limit_price': limit_pr, 'target_price': target_pr, 'signal_idx': t
-                                    })
-                                    last_signal_idx = t
+                            rng = high_cum[t] - low_cum[t]
+                            if rng > 0:
+                                rng_pos = (p_mid[t] - low_cum[t]) / rng
+                                b_r = min(int(rng_pos * 5), 4)
+                                b_rs = 0 if rsis[t] < 30 else (2 if rsis[t] > 70 else 1)
+                                b_tr = 0 if trends[t] < -0.0005 else (2 if trends[t] > 0.0005 else 1)
+                                b_vl = 0 if vols[t] < 0.9 else (2 if vols[t] > 1.2 else 1)
+                                
+                                key = (hours[t], b_r, b_rs, b_tr, b_vl)
+                                if key in prob_map:
+                                    stats = prob_map[key]
+                                    if stats['hit_mean'] >= E_THRESH and stats['loss_mean'] <= MAX_DROP:
+                                        limit_pr = p_ask[t]
+                                        target_pr = limit_pr + (TP_R * rng)
+                                        pending_orders.append({
+                                            'limit_price': limit_pr, 'target_price': target_pr, 'signal_idx': t
+                                        })
+                                        last_signal_idx = t
         
         equity_curve.append(equity)
         dates_curve.append(dff['time'].iloc[-1])
@@ -324,7 +378,7 @@ def run_strategy(params, data):
     return equity_curve, dates_curve, action_log
 
 if __name__ == "__main__":
-    print("--- START NIEUWE STRATEGIE ---")
+    print("--- START NIEUWE STRATEGIE (MET BREAKEVEN & ADX) ---")
     df_git = get_data_github()
     df_cap = fetch_live_data_capital()
     df_main = merge_and_process(df_git, df_cap)
