@@ -126,7 +126,7 @@ def merge_and_process(df1, df2):
     break_blocks = []
     stats = df[df['is_flat']].groupby('block_id').agg(start=('time', 'first'), count=('time', 'count'))
     for bid, row in stats.iterrows():
-        if (row['count'] > 45 and (row['start'].hour >= 21 or row['start'].hour <= 2)) or row['count'] > 180:
+        if row['count'] > 45 and (row['start'].hour >= 21 or row['start'].hour <= 2):
             break_blocks.append(bid)
 
     df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
