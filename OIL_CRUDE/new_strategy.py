@@ -30,14 +30,14 @@ BEST_PARAMS = {
     'RSI_PERIOD': 14,          
     'MA_PERIOD': 50,
     
-    'LEVERAGE': 10,               
+    'LEVERAGE': 10,              
     'MAX_CONCURRENT_TRADES': 5, 
     'BATCH_COOLDOWN': 10,         
     
     'WINDOW_SIZE': 40,         
     'ENTRY_THRESHOLD': 0.7,    
-    'TP_RANGE': 0.6,            
-    'MAX_DROP': 0.6,            
+    'TP_RANGE': 0.6,           
+    'MAX_DROP': 0.6,           
     'MIN_OBS': 40              
 }
 
@@ -125,15 +125,9 @@ def merge_and_process(df1, df2):
 
     break_blocks = []
     stats = df[df['is_flat']].groupby('block_id').agg(start=('time', 'first'), count=('time', 'count'))
-    
-    # === AANPASSING HIERONDER ===
-    # Oude logica: (row['start'].hour >= 21 or row['start'].hour <= 2)
-    # Nieuwe logica: We verruimen dit naar >= 16:00 om ook vroege sluitingen (19:00 etc) te vangen.
-    # We behouden de eis dat het blok > 45 minuten moet duren.
     for bid, row in stats.iterrows():
-        if row['count'] > 45 and (row['start'].hour >= 16 or row['start'].hour <= 3):
+        if row['count'] > 45 and (row['start'].hour >= 21 or row['start'].hour <= 2):
             break_blocks.append(bid)
-    # ============================
 
     df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
     df['new_sess'] = df['is_trading_active'] & ((df['is_trading_active'].shift(1) == False) | (df.index == 0))
@@ -175,6 +169,7 @@ def run_strategy(params, data):
     
     equity = START_CAPITAL
     
+    # AANPASSING: Start met lege lijsten zodat we pas plotten vanaf trade start (zoals je wilde)
     equity_curve = [] 
     dates_curve = []
     
@@ -213,7 +208,7 @@ def run_strategy(params, data):
         df_h['loss'] = (fut_min <= drop_tgt).astype(int)
         
         df_h['b_rng'] = pd.cut((df_h['mid_price'] - df_h['day_low']) / df_h['day_rng'], bins=range_bins, labels=False)
-        df_h['b_rsi'] = pd.cut(df_h[RSI_COL], bins=rsi_bins, labels=False)      
+        df_h['b_rsi'] = pd.cut(df_h[RSI_COL], bins=rsi_bins, labels=False)     
         df_h['b_trd'] = pd.cut(df_h[TREND_COL], bins=trend_bins, labels=False) 
         df_h['b_vol'] = pd.cut(df_h['vol_ratio'], bins=vol_bins, labels=False) 
         
@@ -318,6 +313,7 @@ def run_strategy(params, data):
                                     })
                                     last_signal_idx = t
         
+        # AANPASSING: Voeg pas toe aan het einde van een HANDELSDAG
         equity_curve.append(equity)
         dates_curve.append(dff['time'].iloc[-1])
 
@@ -338,6 +334,7 @@ if __name__ == "__main__":
             
         if len(dates) > 0:
             plt.figure(figsize=(12, 6))
+            # Plak startpunt (fictieve dag -1) zodat curve mooi begint
             if dates:
                 start_date = dates[0] - timedelta(days=1)
                 dates = [start_date] + dates
