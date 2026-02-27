@@ -7,10 +7,14 @@ matplotlib.use('Agg')  # Cruciaal voor GitHub Actions (geen schermen openen)
 import matplotlib.pyplot as plt
 
 # =============================================================
-# 0. CONFIGURATIE VOOR GITHUB
+# 0. CONFIGURATIE VOOR GITHUB (Aangepaste paden)
 # =============================================================
-OUTPUT_DIR = "OIL_CRUDE/Trading_details"
+OUTPUT_DIR = "OIL_CRUDE/nieuwe strategy 27 feb/Trading details"
+DAILY_PLOTS_DIR = os.path.join(OUTPUT_DIR, "DailyPlots")
+
+# Zorg dat beide mappen bestaan
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(DAILY_PLOTS_DIR, exist_ok=True)
 
 # =============================================================
 # 1. DATA OPHALEN & SCHOONMAKEN
@@ -201,7 +205,7 @@ def bereken_zuivere_score(df_p):
 # =============================================================
 # 3. VISUALISATIE (Aangepast voor GitHub Actions)
 # =============================================================
-def visualiseer_sessie(session_id, df_data, df_trades, output_dir=OUTPUT_DIR):
+def visualiseer_sessie(session_id, df_data, df_trades, output_dir=DAILY_PLOTS_DIR):
     sessie_data = df_data[df_data['session_id'] == session_id]
     
     if sessie_data.empty:
@@ -247,7 +251,7 @@ def visualiseer_sessie(session_id, df_data, df_trades, output_dir=OUTPUT_DIR):
     
     file_path = os.path.join(output_dir, f"sessie_{session_id}_verloop.png")
     plt.savefig(file_path)
-    print(f"✅ Sessie-grafiek opgeslagen als: {file_path}")
+    print(f"✅ Sessie-grafiek (Daily Plot) opgeslagen als: {file_path}")
     plt.close()
 
 # =============================================================
@@ -280,7 +284,7 @@ if __name__ == "__main__":
         df_portfolio = run_portfolio_sim(df_signals, max_slots=BESTE_SLOTS)
 
         if not df_portfolio.empty:
-            # 1. Trading Log opslaan
+            # 1. Trading Log opslaan in hoofdmap
             log_path = os.path.join(OUTPUT_DIR, "trading_log.csv")
             df_portfolio.to_csv(log_path, index=False)
             print(f"✅ Trading log opgeslagen in: {log_path}")
@@ -289,7 +293,7 @@ if __name__ == "__main__":
             final_score, sharpe_ann = bereken_zuivere_score(df_portfolio)
             df_portfolio['Account_Balance'] = 100000 + df_portfolio['PnL_Euro'].cumsum()
 
-            # 3. Equity Curve Plotten & Opslaan
+            # 3. Equity Curve Plotten & Opslaan in hoofdmap
             plt.figure(figsize=(15, 8))
             plt.plot(df_portfolio['Entry_Tijd'], df_portfolio['Account_Balance'], color='#D4AF37', linewidth=2.5,
                      label=f'Scale-Out Strategie (Kans: {BESTE_KANS} | Target 1: {SCALE_OUT_MULTIPLIER}x | Slots: {BESTE_SLOTS})')
@@ -322,7 +326,7 @@ if __name__ == "__main__":
             print(f"✅ Equity curve opgeslagen als: {equity_path}")
             plt.close()
             
-            # 4. De LAATSTE sessie plotten en opslaan (zoals je wilde)
+            # 4. De LAATSTE sessie plotten en opslaan (in DailyPlots submap!)
             laatste_sessie_id = df_ready['session_id'].max()
             print(f"📈 Visualiseren van laatste sessie ({laatste_sessie_id})...")
             visualiseer_sessie(laatste_sessie_id, df_ready, df_portfolio)
