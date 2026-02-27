@@ -1,4 +1,4 @@
-name: Daily Crude Oil Trading Run FEB
+name: Daily Crude Oil Trading FEB
 
 on:
   workflow_dispatch: 
@@ -31,13 +31,13 @@ jobs:
       - name: 🚀 Run Trading Script
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Pad naar je Python script, met aanhalingstekens vanwege de spaties
-        run: python "OIL_CRUDE/nieuwe strategy 27 feb/newstrategy.py"
+        # Het nieuwe, strakke pad naar je python bestand
+        run: python OIL_CRUDE/strategy_feb/Strategy_FEB.py
 
       - name: 💾 Commit and Push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "📊 Automatische update: Trading log, Equity curve & Daily plots"
-          # Welke bestanden hij moet pushen. Dit pakt de Trading details map en de DailyPlots submap
-          file_pattern: "OIL_CRUDE/nieuwe strategy 27 feb/Trading details/*"
+          # Deze notatie pakt de hele map + de DailyPlots submap
+          file_pattern: 'OIL_CRUDE/strategy_feb/TradingDetails'
           branch: master
