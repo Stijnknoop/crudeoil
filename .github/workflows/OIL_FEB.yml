@@ -35,14 +35,14 @@ jobs:
         env:
           # Hier laadt het script je GITHUB_TOKEN in vanuit de ingebouwde secrets
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # LET OP: Verander 'main.py' hieronder naar de echte naam van jouw Python bestand!
-        run: python main.py 
+        # LET OP DE AANHALINGSTEKENS: Dit is nodig vanwege de spaties in de mapnaam!
+        run: python "OIL_CRUDE/nieuwe strategy 27 feb/newstrategy.py"
 
       - name: 💾 Commit and Push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "📊 Automatische update: Trading log & grafieken"
           # Welke bestanden hij moet pushen. Dit pakt alles in je output map.
-          file_pattern: 'OIL_CRUDE/FEB_STRATEGY/Trading_details/*'
-          # LET OP: Verander dit naar 'master' als jouw hoofdbranch master heet in plaats van main
-          branch: main
+          file_pattern: 'OIL_CRUDE/Trading_details/*'
+          # Aangepast naar master op basis van je python script
+          branch: master
