@@ -1,16 +1,14 @@
 name: Daily Crude Oil Trading Run FEB
 
-# Bepaalt WANEER de actie draait
 on:
-  workflow_dispatch: # 1. Handmatige knop in GitHub Actions tab
+  workflow_dispatch: 
   schedule:
-    - cron: '0 2 * * *' # 2. Elke nacht om 02:00 UTC (automatisch)
+    - cron: '0 2 * * *' 
 
 jobs:
   run-trading-script:
     runs-on: ubuntu-latest
     
-    # Geef de runner toestemming om bestanden te pushen naar de repo
     permissions:
       contents: write
 
@@ -18,13 +16,12 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
         with:
-          # Zorgt ervoor dat we de hele history hebben om over te schrijven
           fetch-depth: 0 
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # Goede stabiele versie voor Pandas/Numpy
+          python-version: '3.10'
 
       - name: 📦 Install dependencies
         run: |
@@ -33,16 +30,14 @@ jobs:
 
       - name: 🚀 Run Trading Script
         env:
-          # Hier laadt het script je GITHUB_TOKEN in vanuit de ingebouwde secrets
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # LET OP DE AANHALINGSTEKENS: Dit is nodig vanwege de spaties in de mapnaam!
+        # Pad naar je Python script, met aanhalingstekens vanwege de spaties
         run: python "OIL_CRUDE/nieuwe strategy 27 feb/newstrategy.py"
 
       - name: 💾 Commit and Push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "📊 Automatische update: Trading log & grafieken"
-          # Welke bestanden hij moet pushen. Dit pakt alles in je output map.
-          file_pattern: 'OIL_CRUDE/Trading_details/*'
-          # Aangepast naar master op basis van je python script
+          commit_message: "📊 Automatische update: Trading log, Equity curve & Daily plots"
+          # Welke bestanden hij moet pushen. Dit pakt de Trading details map en de DailyPlots submap
+          file_pattern: "OIL_CRUDE/nieuwe strategy 27 feb/Trading details/*"
           branch: master
