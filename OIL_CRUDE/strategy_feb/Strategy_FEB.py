@@ -159,7 +159,7 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
     
     return pd.DataFrame(alle_trades)
 
-def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_multiplier=10):
+def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_multiplier=1):
     if df_trades.empty: return pd.DataFrame()
 
     huidige_balans = start_kapitaal
