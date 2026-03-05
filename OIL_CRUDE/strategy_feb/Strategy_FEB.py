@@ -3,16 +3,15 @@ import requests
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # Cruciaal voor GitHub Actions
+matplotlib.use('Agg')  # Cruciaal voor GitHub Actions (geen GUI)
 import matplotlib.pyplot as plt
 
 # =============================================================
-# 0. CONFIGURATIE VOOR GITHUB (De nieuwe strakke paden!)
+# 0. CONFIGURATIE VOOR GITHUB
 # =============================================================
 OUTPUT_DIR = "OIL_CRUDE/strategy_feb/TradingDetails"
 DAILY_PLOTS_DIR = os.path.join(OUTPUT_DIR, "DailyPlots")
 
-# Zorg dat beide mappen bestaan als het script draait
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(DAILY_PLOTS_DIR, exist_ok=True)
 
@@ -76,7 +75,7 @@ def prep_and_engineer_features(df):
     return df
 
 # =============================================================
-# 2. STRATEGIE & SIMULATIE
+# 2. STRATEGIE & SIMULATIE (Notebook Logica)
 # =============================================================
 def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scale_out_multiplier):
     unique_sessions = sorted(df['session_id'].unique())
@@ -114,11 +113,36 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
 
             if beste_multiplier is not None:
                 c_prijs_ask = actuele_rij['close_ask']
+                signaal_tijd = actuele_rij['time']
                 
                 target_full = c_prijs_ask + (beste_multiplier * actuele_rij['current_range'])
                 target_1 = c_prijs_ask + (scale_out_multiplier * beste_multiplier * actuele_rij['current_range'])
                 
-                data_na = sessie_data[sessie_data['time'] > actuele_rij['time']]
+                eval_start_tijd = signaal_tijd + pd.Timedelta(minutes=2)
+                data_evaluatie = sessie_data[sessie_data['time'] >= eval_start_tijd]
+
+                if data_evaluatie.empty: continue
+
+                hit_fill = data_evaluatie[data_evaluatie['low_bid'] <= c_prijs_ask]
+                hit_cancel = data_evaluatie[data_evaluatie['high_bid'] >= target_1]
+
+                idx_fill = hit_fill.index[0] if not hit_fill.empty else float('inf')
+                idx_cancel = hit_cancel.index[0] if not hit_cancel.empty else float('inf')
+                
+                # --- PENDING ORDERS (Geannuleerd) ---
+                if idx_fill == float('inf') or idx_cancel <= idx_fill:
+                    alle_trades.append({
+                        'Sessie': huidige_sessie, 'Signaal_Tijd': signaal_tijd,
+                        'Entry_Tijd': pd.NaT, 'Entry_Prijs': c_prijs_ask,
+                        'Exit_Tijd_1': pd.NaT, 'Exit_Prijs_1': target_1,
+                        'Exit_Tijd_2': pd.NaT, 'Exit_Prijs_2': target_full,
+                        'Multiplier': beste_multiplier, 'Resultaat': 'GEANNULEERD 🚫',
+                        'Status': 'Pending/Canceled'
+                    })
+                    continue
+
+                echte_entry_tijd = hit_fill['time'].iloc[0]
+                data_na = sessie_data[sessie_data['time'] > echte_entry_tijd]
 
                 if not data_na.empty:
                     winst_momenten_1 = data_na[data_na['high_bid'] >= target_1]
@@ -150,24 +174,27 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
                                 exit_t_2, exit_p_2, res = data_na_half['time'].iloc[-1], data_na_half['close_bid'].iloc[-1], 'HALVE WINST / EINDE ✅⏳'
 
                     alle_trades.append({
-                        'Sessie': huidige_sessie, 'Entry_Tijd': actuele_rij['time'], 
-                        'Entry_Prijs': c_prijs_ask, 
+                        'Sessie': huidige_sessie, 'Signaal_Tijd': signaal_tijd,
+                        'Entry_Tijd': echte_entry_tijd, 'Entry_Prijs': c_prijs_ask,
                         'Exit_Tijd_1': exit_t_1, 'Exit_Prijs_1': exit_p_1,
                         'Exit_Tijd_2': exit_t_2, 'Exit_Prijs_2': exit_p_2,
-                        'Multiplier': beste_multiplier, 'Resultaat': res
+                        'Multiplier': beste_multiplier, 'Resultaat': res,
+                        'Status': 'Executed'
                     })
     
     return pd.DataFrame(alle_trades)
 
-def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_multiplier=1):
+def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_multiplier=10):
     if df_trades.empty: return pd.DataFrame()
 
     huidige_balans = start_kapitaal
     actieve_trades = []
     geaccepteerde_trades = []
-    df_exact = df_trades.sort_values('Entry_Tijd').reset_index(drop=True)
+    
+    # Filter alleen de uitgevoerde trades voor portfoliologika
+    df_executed = df_trades[df_trades['Status'] == 'Executed'].sort_values('Entry_Tijd').reset_index(drop=True)
 
-    for _, trade in df_exact.iterrows():
+    for _, trade in df_executed.iterrows():
         nog_actief = []
         for ot in actieve_trades:
             if trade['Entry_Tijd'] >= ot['exit_time']: 
@@ -178,15 +205,21 @@ def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_mult
 
         if len(actieve_trades) < max_slots:
             inleg = huidige_balans / max_slots
-            eenheden = inleg / trade['Entry_Prijs']
+            eenheden = int(inleg / trade['Entry_Prijs'])
             
-            pnl_deel_1 = (trade['Exit_Prijs_1'] - trade['Entry_Prijs']) * (eenheden * 0.5) * contract_multiplier
-            pnl_deel_2 = (trade['Exit_Prijs_2'] - trade['Entry_Prijs']) * (eenheden * 0.5) * contract_multiplier
+            if eenheden == 0: continue
+            
+            eenheden_exit_1 = int(eenheden / 2)
+            eenheden_exit_2 = eenheden - eenheden_exit_1
+            
+            pnl_deel_1 = (trade['Exit_Prijs_1'] - trade['Entry_Prijs']) * eenheden_exit_1 * contract_multiplier
+            pnl_deel_2 = (trade['Exit_Prijs_2'] - trade['Entry_Prijs']) * eenheden_exit_2 * contract_multiplier
             totale_pnl = pnl_deel_1 + pnl_deel_2
             
             actieve_trades.append({'exit_time': trade['Exit_Tijd_2'], 'pnl': totale_pnl})
             
             trade_data = trade.copy()
+            trade_data['Gekochte_Eenheden'] = eenheden
             trade_data['PnL_Euro'] = totale_pnl
             geaccepteerde_trades.append(trade_data)
 
@@ -203,55 +236,104 @@ def bereken_zuivere_score(df_p):
     return annualized_sharpe * df_p['PnL_Euro'].sum(), annualized_sharpe
 
 # =============================================================
-# 3. VISUALISATIE
+# 3. VISUALISATIE (Inclusief text boxes & limits)
 # =============================================================
-def visualiseer_sessie(session_id, df_data, df_trades, output_dir=DAILY_PLOTS_DIR):
-    sessie_data = df_data[df_data['session_id'] == session_id]
+def visualiseer_laatste_dag(df_data, df_signals, df_portfolio, output_dir=DAILY_PLOTS_DIR):
+    if df_signals.empty: return
     
-    if sessie_data.empty:
-        print(f"❌ Sessie {session_id} niet gevonden in de dataset.")
-        return
+    # Zoek de laatste dag met signalen
+    laatste_datum = df_signals['Signaal_Tijd'].dt.strftime('%Y-%m-%d').max()
+    dag_data = df_data[df_data['time'].dt.strftime('%Y-%m-%d') == laatste_datum].copy()
+    dag_signals = df_signals[df_signals['Signaal_Tijd'].dt.strftime('%Y-%m-%d') == laatste_datum].copy()
+
+    # Maak de plot wat breder om ruimte te maken voor de tekst
+    fig, ax = plt.subplots(figsize=(18, 8))
+    ax.plot(dag_data['time'], dag_data['close_bid'], label='Close Prijs', color='black', linewidth=1.5)
+    ax.fill_between(dag_data['time'], dag_data['low_bid'], dag_data['high_bid'], color='gray', alpha=0.2)
+    
+    tekst_lijnen = [f"📅 TRADING OVERZICHT: {laatste_datum}", "="*40]
+    totale_winst_euro = 0
+    start_balans_dag = None
+
+    for i, row in dag_signals.sort_values('Signaal_Tijd').iterrows():
+        tijd_str = row['Signaal_Tijd'].strftime('%H:%M')
         
-    sessie_trades = df_trades[df_trades['Sessie'] == session_id].copy()
-    
-    plt.figure(figsize=(14, 7))
-    plt.plot(sessie_data['time'], sessie_data['close_bid'], label='Close Prijs', color='black', linewidth=1.5)
-    plt.fill_between(sessie_data['time'], sessie_data['low_bid'], sessie_data['high_bid'], color='gray', alpha=0.2, label='High/Low Range')
-    
-    if not sessie_trades.empty:
-        sessie_trades['Gemiddelde_Exit'] = (sessie_trades['Exit_Prijs_1'] + sessie_trades['Exit_Prijs_2']) / 2
-        sessie_trades['Winst_pct_num'] = ((sessie_trades['Gemiddelde_Exit'] - sessie_trades['Entry_Prijs']) / sessie_trades['Entry_Prijs']) * 100
-        totale_sessie_winst = sessie_trades['Winst_pct_num'].sum()
-        sessie_trades['Winst_%'] = sessie_trades['Winst_pct_num'].round(3).astype(str) + '%'
-        
-        for i, trade in sessie_trades.iterrows():
-            is_first = (i == sessie_trades.index[0])
-            plt.scatter(trade['Entry_Tijd'], trade['Entry_Prijs'], color='green', marker='^', s=150, zorder=5, edgecolors='black', label='Entry' if is_first else "")
-            plt.scatter(trade['Exit_Tijd_1'], trade['Exit_Prijs_1'], color='orange', marker='o', s=100, zorder=5, edgecolors='black', label='Exit 1 (50%)' if is_first else "")
+        if row['Status'] == 'Pending/Canceled':
+            # Teken pending order
+            ax.hlines(y=row['Entry_Prijs'], xmin=row['Signaal_Tijd'], xmax=row['Signaal_Tijd'] + pd.Timedelta(minutes=30), color='gray', linestyle=':', linewidth=2)
+            ax.scatter(row['Signaal_Tijd'], row['Entry_Prijs'], color='gray', marker='x', s=100, zorder=5)
+            tekst_lijnen.append(f"🕒 {tijd_str} | 🚫 CANCELLED (Prijs schoot weg)")
+            tekst_lijnen.append("-" * 40)
+        else:
+            port_row = df_portfolio[df_portfolio['Entry_Tijd'] == row['Entry_Tijd']]
             
-            kleur_exit2 = 'green' if '✅✅' in trade['Resultaat'] else ('blue' if '➖' in trade['Resultaat'] else 'red')
-            plt.scatter(trade['Exit_Tijd_2'], trade['Exit_Prijs_2'], color=kleur_exit2, marker='v', s=150, zorder=5, edgecolors='black', label='Exit 2 (Restant)' if is_first else "")
-            
-            plt.plot([trade['Entry_Tijd'], trade['Exit_Tijd_1']], [trade['Entry_Prijs'], trade['Exit_Prijs_1']], color='orange', linestyle='--', alpha=0.6)
-            plt.plot([trade['Exit_Tijd_1'], trade['Exit_Tijd_2']], [trade['Exit_Prijs_1'], trade['Exit_Prijs_2']], color=kleur_exit2, linestyle='--', alpha=0.6)
-            
-        print(f"📊 {len(sessie_trades)} trade(s) gevonden in sessie {session_id}.")
-        print(f"📈 Totale winst/verlies van de dag: {totale_sessie_winst:.3f}%\n")
-        
-    else:
-        print(f"ℹ️ Geen trades uitgevoerd in sessie {session_id}.")
-        
-    plt.title(f'Trade Verloop - Sessie {session_id}', fontsize=16)
-    plt.xlabel('Tijd', fontsize=12)
-    plt.ylabel('Prijs', fontsize=12)
-    plt.grid(True, linestyle=':', alpha=0.6)
-    plt.legend(loc='best')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
+            if not port_row.empty:
+                port_data = port_row.iloc[0]
+                eenheden = port_data.get('Gekochte_Eenheden', 0)
+                pnl_euro = port_data.get('PnL_Euro', 0)
+                huidige_balans = port_data.get('Account_Balance', 100000)
+                
+                if start_balans_dag is None:
+                    start_balans_dag = huidige_balans - pnl_euro
+                totale_winst_euro += pnl_euro
+
+                # Teken de limits (TP1, TP2, Entry/SL)
+                ax.hlines(y=row['Exit_Prijs_1'], xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_1'], colors='orange', linestyles=':', alpha=0.8, label='TP1 / Scale-Out' if i==0 else "")
+                ax.hlines(y=row['Exit_Prijs_2'], xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='blue', linestyles=':', alpha=0.8, label='TP2 / Volledig' if i==0 else "")
+                ax.hlines(y=row['Entry_Prijs'], xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='green', linestyles='-.', alpha=0.5, label='Entry / BE niveau' if i==0 else "")
+
+                # Markers & Verbindingslijnen
+                ax.scatter(row['Entry_Tijd'], row['Entry_Prijs'], color='green', marker='^', s=150, zorder=6, edgecolors='black')
+                ax.scatter(row['Exit_Tijd_1'], row['Exit_Prijs_1'], color='orange', marker='o', s=100, zorder=6, edgecolors='black')
+                ax.scatter(row['Exit_Tijd_2'], row['Exit_Prijs_2'], color='blue', marker='v', s=150, zorder=6, edgecolors='black')
+                
+                ax.plot([row['Entry_Tijd'], row['Exit_Tijd_1']], [row['Entry_Prijs'], row['Exit_Prijs_1']], color='orange', linestyle='--', alpha=0.6)
+                ax.plot([row['Exit_Tijd_1'], row['Exit_Tijd_2']], [row['Exit_Prijs_1'], row['Exit_Prijs_2']], color='blue', linestyle='--', alpha=0.6)
+
+                # Bereken PnL percentages
+                gemiddelde_exit = (row['Exit_Prijs_1'] + row['Exit_Prijs_2']) / 2
+                pure_pct = ((gemiddelde_exit - row['Entry_Prijs']) / row['Entry_Prijs']) * 100
+                inleg = eenheden * row['Entry_Prijs']
+                trade_pct = (pnl_euro / inleg) * 100 if inleg > 0 else 0
+
+                tekst_lijnen.append(f"🕒 {tijd_str} | {row['Resultaat']}")
+                tekst_lijnen.append(f"   ↳ PnL (pure): {pure_pct:+.3f}%")
+                tekst_lijnen.append(f"   ↳ PnL (multi): {trade_pct:+.2f}%")
+                tekst_lijnen.append(f"   ↳ Units: {eenheden}")
+                tekst_lijnen.append("-" * 40)
+
+    # Dag samenvatting
+    dag_pct_totaal = 0
+    if start_balans_dag is not None and start_balans_dag > 0:
+        dag_pct_totaal = (totale_winst_euro / start_balans_dag) * 100
+
+    hypo_start = 100000.00
+    hypo_eind = hypo_start * (1 + (dag_pct_totaal / 100))
     
-    file_path = os.path.join(output_dir, f"sessie_{session_id}_verloop.png")
-    plt.savefig(file_path)
-    print(f"✅ Sessie-grafiek (Daily Plot) opgeslagen als: {file_path}")
+    tekst_lijnen.append(f"💶 Beginbalans: €{hypo_start:,.0f}")
+    tekst_lijnen.append(f"💰 Eindbalans: €{hypo_eind:,.0f}")
+    tekst_lijnen.append(f"📈 Dag Winst: {dag_pct_totaal:+.2f}%")
+
+    # Voeg tekstblok toe aan de rechterkant van de grafiek
+    volledige_tekst = "\n".join(tekst_lijnen)
+    plt.subplots_adjust(right=0.75) # Maak ruimte rechts
+    fig.text(0.77, 0.5, volledige_tekst, fontsize=10, family='monospace', 
+             verticalalignment='center', bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=1'))
+
+    ax.set_title(f'Trade Verloop incl. Pending Orders & Limits - {laatste_datum}', fontsize=16)
+    ax.set_xlabel('Tijd', fontsize=12)
+    ax.set_ylabel('Prijs', fontsize=12)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.tick_params(axis='x', rotation=45)
+    
+    # Voorkom dubbele legend-entries
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys(), loc='upper left')
+    
+    file_path = os.path.join(output_dir, f"dag_{laatste_datum}_verloop.png")
+    plt.savefig(file_path, bbox_inches='tight')
+    print(f"✅ Dag-grafiek (Daily Plot met stats) opgeslagen als: {file_path}")
     plt.close()
 
 # =============================================================
@@ -271,7 +353,7 @@ if __name__ == "__main__":
         print("⚙️ Features engineeren...")
         df_ready = prep_and_engineer_features(df_raw)
         
-        print(f"🚀 Signalen genereren met 2-Staps Exit (Kans {BESTE_KANS}, Dal {BESTE_DALING}, Scale-Out {SCALE_OUT_MULTIPLIER})...")
+        print(f"🚀 Signalen genereren met Limit Order Logica (Kans {BESTE_KANS}, Dal {BESTE_DALING}, Scale-Out {SCALE_OUT_MULTIPLIER})...")
         df_signals = genereer_signalen_dynamisch(
             df_ready, 
             min_kans=BESTE_KANS, 
@@ -284,7 +366,7 @@ if __name__ == "__main__":
         df_portfolio = run_portfolio_sim(df_signals, max_slots=BESTE_SLOTS)
 
         if not df_portfolio.empty:
-            # 1. Trading Log opslaan in TradingDetails map
+            # 1. Trading Log opslaan
             log_path = os.path.join(OUTPUT_DIR, "trading_log.csv")
             df_portfolio.to_csv(log_path, index=False)
             print(f"✅ Trading log opgeslagen in: {log_path}")
@@ -293,13 +375,13 @@ if __name__ == "__main__":
             final_score, sharpe_ann = bereken_zuivere_score(df_portfolio)
             df_portfolio['Account_Balance'] = 100000 + df_portfolio['PnL_Euro'].cumsum()
 
-            # 3. Equity Curve Plotten & Opslaan in TradingDetails map
+            # 3. Equity Curve
             plt.figure(figsize=(15, 8))
             plt.plot(df_portfolio['Entry_Tijd'], df_portfolio['Account_Balance'], color='#D4AF37', linewidth=2.5,
-                     label=f'Scale-Out Strategie (Kans: {BESTE_KANS} | Target 1: {SCALE_OUT_MULTIPLIER}x | Slots: {BESTE_SLOTS})')
+                     label=f'Pending Order Strategie (Kans: {BESTE_KANS} | Target 1: {SCALE_OUT_MULTIPLIER}x | Slots: {BESTE_SLOTS})')
             
             plt.axhline(100000, color='black', alpha=0.5, linestyle='--')
-            plt.title('Equity Curve: Scale-Out & Breakeven Stop', fontsize=16)
+            plt.title('Equity Curve: Limit Order met Auto-Cancel', fontsize=16)
             plt.xlabel('Tijdlijn', fontsize=12)
             plt.ylabel('Kapitaal (€)', fontsize=12)
             
@@ -313,7 +395,7 @@ if __name__ == "__main__":
             winst = eindbalans - 100000
             stats_text = (f"Eindbalans: €{eindbalans:,.0f}\n"
                           f"Netto Winst: €{winst:,.0f}\n"
-                          f"Aantal Trades: {len(df_portfolio)}\n"
+                          f"Gevulde Trades: {len(df_portfolio)}\n"
                           f"Ann. Sharpe: {sharpe_ann:.2f}")
 
             plt.text(0.02, 0.75, stats_text, transform=ax.transAxes, fontsize=12,
@@ -326,13 +408,15 @@ if __name__ == "__main__":
             print(f"✅ Equity curve opgeslagen als: {equity_path}")
             plt.close()
             
-            # 4. De LAATSTE sessie plotten en opslaan (in DailyPlots submap!)
-            laatste_sessie_id = df_ready['session_id'].max()
-            print(f"📈 Visualiseren van laatste sessie ({laatste_sessie_id})...")
-            visualiseer_sessie(laatste_sessie_id, df_ready, df_portfolio)
+            # 4. De LAATSTE dag plotten met alle logica en limits
+            print(f"📈 Visualiseren van laatste trading dag...")
+            visualiseer_laatste_dag(df_ready, df_signals, df_portfolio)
 
-            print("\n📊 Samenvatting Resultaten:")
+            print("\n📊 Samenvatting Resultaten (alleen gevulde orders):")
             print(df_portfolio['Resultaat'].value_counts())
+            
+            gem_units = int(df_portfolio['Gekochte_Eenheden'].mean())
+            print(f"📦 Gemiddeld aantal eenheden per trade: {gem_units}")
             print("--- KLAAR ---")
         else:
-            print("❌ Geen trades gevonden met deze instellingen. (Geen bestanden opgeslagen)")
+            print("❌ Geen trades gevuld met deze instellingen. (Geen bestanden opgeslagen)")
