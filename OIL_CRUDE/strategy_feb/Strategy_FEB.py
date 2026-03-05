@@ -300,8 +300,6 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
                     inleg = eenheden * row['Entry_Prijs']
                     
                     tp1_pure_rit = ((row['Exit_Prijs_1'] - row['Entry_Prijs']) / row['Entry_Prijs']) * 100
-                    
-                    # Berekenen van de afzonderlijke procenten voor TP1 en TP2 op de inleg
                     pct_tp1 = (pnl_deel_1 / inleg) * 100 if inleg > 0 else 0
                     pct_tp2 = (pnl_deel_2 / inleg) * 100 if inleg > 0 else 0
                     
@@ -318,7 +316,6 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
                     tekst_lijnen.append(f"   -> Units: {eenheden}")
                     tekst_lijnen.append("-" * 45)
 
-        # Dag samenvatting
         dag_pct_totaal = 0
         if start_balans_dag is not None and start_balans_dag > 0:
             dag_pct_totaal = (totale_winst_euro / start_balans_dag) * 100
@@ -385,27 +382,42 @@ if __name__ == "__main__":
             print(f"✅ Trading log opgeslagen in: {log_path}")
 
             final_score, sharpe_ann = bereken_zuivere_score(df_portfolio)
+            
+            # Hou originele balance logica voor export doeleinden
             df_portfolio['Account_Balance'] = 100000 + df_portfolio['PnL_Euro'].cumsum()
 
+            # --- NIEUW: Converteer naar een Dagelijkse Equity Curve ---
+            df_daily = df_portfolio.groupby(df_portfolio['Entry_Tijd'].dt.date)['PnL_Euro'].sum().reset_index()
+            df_daily.rename(columns={'Entry_Tijd': 'Datum', 'PnL_Euro': 'Dag_PnL'}, inplace=True)
+            df_daily['Account_Balance'] = 100000 + df_daily['Dag_PnL'].cumsum()
+
+            # Zorg dat de grafiek netjes op 100.000 begint (dag 0)
+            df_daily['Datum'] = pd.to_datetime(df_daily['Datum'])
+            start_datum = df_daily['Datum'].iloc[0] - pd.Timedelta(days=1)
+            df_start = pd.DataFrame({'Datum': [start_datum], 'Dag_PnL': [0], 'Account_Balance': [100000]})
+            df_daily = pd.concat([df_start, df_daily], ignore_index=True)
+
+            # --- PLOTTEN VAN DE DAGELIJKSE EQUITY CURVE ---
             plt.figure(figsize=(15, 8))
-            plt.plot(df_portfolio['Entry_Tijd'], df_portfolio['Account_Balance'], color='#D4AF37', linewidth=2.5,
-                     label=f'Pending Order Strategie (Kans: {BESTE_KANS} | Target 1: {SCALE_OUT_MULTIPLIER}x | Slots: {BESTE_SLOTS})')
+            plt.plot(df_daily['Datum'], df_daily['Account_Balance'], color='#D4AF37', linewidth=2.5, marker='o', markersize=6,
+                     label=f'Dagelijkse Compounding (Kans: {BESTE_KANS} | Target 1: {SCALE_OUT_MULTIPLIER}x | Slots: {BESTE_SLOTS})')
             
             plt.axhline(100000, color='black', alpha=0.5, linestyle='--')
-            plt.title('Equity Curve: Limit Order met Auto-Cancel', fontsize=16)
-            plt.xlabel('Tijdlijn', fontsize=12)
+            plt.title('Dagelijkse Equity Curve: Limit Order met Auto-Cancel', fontsize=16)
+            plt.xlabel('Tijdlijn (Dagen)', fontsize=12)
             plt.ylabel('Kapitaal (€)', fontsize=12)
             
             ax = plt.gca()
             ax.yaxis.set_major_formatter(plt.matplotlib.ticker.StrMethodFormatter('€{x:,.0f}'))
             plt.grid(True, which='both', linestyle=':', alpha=0.6)
             plt.legend(loc='upper left')
-            plt.xticks(rotation=30)
+            plt.xticks(rotation=45)
 
-            eindbalans = df_portfolio['Account_Balance'].iloc[-1]
+            eindbalans = df_daily['Account_Balance'].iloc[-1]
             winst = eindbalans - 100000
             stats_text = (f"Eindbalans: €{eindbalans:,.0f}\n"
                           f"Netto Winst: €{winst:,.0f}\n"
+                          f"Aantal Dagen: {len(df_daily)-1}\n"
                           f"Gevulde Trades: {len(df_portfolio)}\n"
                           f"Ann. Sharpe: {sharpe_ann:.2f}")
 
