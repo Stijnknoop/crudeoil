@@ -185,7 +185,7 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
     
     return pd.DataFrame(alle_trades)
 
-def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_multiplier=1):
+def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_multiplier=10):
     if df_trades.empty: return pd.DataFrame()
 
     huidige_balans = start_kapitaal
@@ -240,7 +240,6 @@ def bereken_zuivere_score(df_p):
 # =============================================================
 # 3. VISUALISATIE
 # =============================================================
-# Let op: max_slots parameter toegevoegd om de winst per trade te kunnen schalen
 def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, output_dir=DAILY_PLOTS_DIR):
     if df_signals.empty: 
         print("ℹ️ Geen signalen om te visualiseren.")
@@ -276,7 +275,8 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
                     port_data = port_row.iloc[0]
                     eenheden = port_data.get('Gekochte_Eenheden', 0)
                     pnl_euro = port_data.get('PnL_Euro', 0)
-                    pnl_deel_1 = port_data.get('PnL_Deel_1', 0)  
+                    pnl_deel_1 = port_data.get('PnL_Deel_1', 0)
+                    pnl_deel_2 = port_data.get('PnL_Deel_2', 0)
                     huidige_balans = port_data.get('Account_Balance', 100000)
                     
                     if start_balans_dag is None:
@@ -297,21 +297,23 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
                     ax.plot([row['Entry_Tijd'], row['Exit_Tijd_1']], [row['Entry_Prijs'], row['Exit_Prijs_1']], color='orange', linestyle='--', alpha=0.6)
                     ax.plot([row['Exit_Tijd_1'], row['Exit_Tijd_2']], [row['Exit_Prijs_1'], row['Exit_Prijs_2']], color='blue', linestyle='--', alpha=0.6)
 
-                    # Berekeningen voor de weergave
                     inleg = eenheden * row['Entry_Prijs']
                     
                     tp1_pure_rit = ((row['Exit_Prijs_1'] - row['Entry_Prijs']) / row['Entry_Prijs']) * 100
-                    voorlopig_pct = (pnl_deel_1 / inleg) * 100 if inleg > 0 else 0
-                    definitief_pct_inleg = (pnl_euro / inleg) * 100 if inleg > 0 else 0
                     
-                    # Bereken impact op de totale portfolio (gegeven de positie grootte)
+                    # Berekenen van de afzonderlijke procenten voor TP1 en TP2 op de inleg
+                    pct_tp1 = (pnl_deel_1 / inleg) * 100 if inleg > 0 else 0
+                    pct_tp2 = (pnl_deel_2 / inleg) * 100 if inleg > 0 else 0
+                    
+                    definitief_pct_inleg = (pnl_euro / inleg) * 100 if inleg > 0 else 0
                     definitief_pct_portfolio = definitief_pct_inleg / max_slots
                     
                     clean_res = row['Resultaat'].replace('✅', '').replace('❌', '').replace('⏳', '').replace('➖', '').strip()
 
                     tekst_lijnen.append(f"Tijd: {tijd_str} | {clean_res}")
                     tekst_lijnen.append(f"   -> Werkelijke Rit tp1: {tp1_pure_rit:+.3f}%")
-                    tekst_lijnen.append(f"   -> Winst op Inleg    : {definitief_pct_inleg:+.2f}%")
+                    tekst_lijnen.append(f"   -> Winst op tp1/tp2  : {pct_tp1:+.2f}% en {pct_tp2:+.2f}%")
+                    tekst_lijnen.append(f"   -> Winst einde trade : {definitief_pct_inleg:+.2f}%")
                     tekst_lijnen.append(f"   -> Winst Portfolio   : {definitief_pct_portfolio:+.2f}% (1/{max_slots} size)")
                     tekst_lijnen.append(f"   -> Units: {eenheden}")
                     tekst_lijnen.append("-" * 45)
@@ -328,7 +330,6 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
         tekst_lijnen.append(f"Eindbalans  : Euro {hypo_eind:,.0f}")
         tekst_lijnen.append(f"Dag Winst   : {dag_pct_totaal:+.2f}%")
 
-        # Voeg tekstblok toe met iets meer marge aan de zijkant voor de tekstlengte
         volledige_tekst = "\n".join(tekst_lijnen)
         plt.subplots_adjust(right=0.70) 
         fig.text(0.72, 0.5, volledige_tekst, fontsize=10, family='monospace', 
@@ -419,7 +420,6 @@ if __name__ == "__main__":
             plt.close()
             
             print(f"📈 Visualiseren van alle trading dagen...")
-            # Belangrijk: max_slots wordt hier doorgegeven!
             visualiseer_alle_dagen(df_ready, df_signals, df_portfolio, max_slots=BESTE_SLOTS)
 
             print("\n📊 Samenvatting Resultaten (alleen gevulde orders):")
