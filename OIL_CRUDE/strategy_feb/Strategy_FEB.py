@@ -133,7 +133,7 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
                     alle_trades.append({
                         'Sessie': huidige_sessie, 'Signaal_Tijd': signaal_tijd,
                         'Entry_Tijd': pd.NaT, 'Entry_Prijs': c_prijs_ask,
-                        'Target_Prijs_1': target_1, 'Target_Prijs_2': target_full, # Opslaan originele targets
+                        'Target_Prijs_1': target_1, 'Target_Prijs_2': target_full, 
                         'Exit_Tijd_1': pd.NaT, 'Exit_Prijs_1': target_1,
                         'Exit_Tijd_2': pd.NaT, 'Exit_Prijs_2': target_full,
                         'Multiplier': beste_multiplier, 'Resultaat': 'GEANNULEERD 🚫',
@@ -176,7 +176,7 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
                     alle_trades.append({
                         'Sessie': huidige_sessie, 'Signaal_Tijd': signaal_tijd,
                         'Entry_Tijd': echte_entry_tijd, 'Entry_Prijs': c_prijs_ask,
-                        'Target_Prijs_1': target_1, 'Target_Prijs_2': target_full, # Opslaan originele targets
+                        'Target_Prijs_1': target_1, 'Target_Prijs_2': target_full, 
                         'Exit_Tijd_1': exit_t_1, 'Exit_Prijs_1': exit_p_1,
                         'Exit_Tijd_2': exit_t_2, 'Exit_Prijs_2': exit_p_2,
                         'Multiplier': beste_multiplier, 'Resultaat': res,
@@ -240,7 +240,8 @@ def bereken_zuivere_score(df_p):
 # =============================================================
 # 3. VISUALISATIE
 # =============================================================
-def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, output_dir=DAILY_PLOTS_DIR):
+# Let op: max_slots parameter toegevoegd om de winst per trade te kunnen schalen
+def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, output_dir=DAILY_PLOTS_DIR):
     if df_signals.empty: 
         print("ℹ️ Geen signalen om te visualiseren.")
         return
@@ -256,7 +257,7 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, output_dir=DAILY_P
         ax.plot(dag_data['time'], dag_data['close_bid'], label='Close Prijs', color='black', linewidth=1.5)
         ax.fill_between(dag_data['time'], dag_data['low_bid'], dag_data['high_bid'], color='gray', alpha=0.2)
         
-        tekst_lijnen = [f"TRADING OVERZICHT: {datum_str}", "="*43]
+        tekst_lijnen = [f"TRADING OVERZICHT: {datum_str}", "="*45]
         totale_winst_euro = 0
         start_balans_dag = None
 
@@ -267,7 +268,7 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, output_dir=DAILY_P
                 ax.hlines(y=row['Entry_Prijs'], xmin=row['Signaal_Tijd'], xmax=row['Signaal_Tijd'] + pd.Timedelta(minutes=30), color='gray', linestyle=':', linewidth=2)
                 ax.scatter(row['Signaal_Tijd'], row['Entry_Prijs'], color='gray', marker='x', s=100, zorder=5)
                 tekst_lijnen.append(f"Tijd: {tijd_str} | [x] CANCELLED")
-                tekst_lijnen.append("-" * 43)
+                tekst_lijnen.append("-" * 45)
             else:
                 port_row = df_portfolio[df_portfolio['Entry_Tijd'] == row['Entry_Tijd']]
                 
@@ -282,16 +283,13 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, output_dir=DAILY_P
                         start_balans_dag = huidige_balans - pnl_euro
                     totale_winst_euro += pnl_euro
 
-                    # Ophalen van de originele targets (met fallback just in case)
                     target_1 = row.get('Target_Prijs_1', row['Exit_Prijs_1'])
                     target_2 = row.get('Target_Prijs_2', row['Exit_Prijs_2'])
 
-                    # Teken de limits op de ORIGINELE doelen, en trek ze door tot de trade definitief dicht ging
                     ax.hlines(y=target_1, xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='orange', linestyles=':', alpha=0.8, label='TP1 Doel' if i==0 else "")
                     ax.hlines(y=target_2, xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='blue', linestyles=':', alpha=0.8, label='TP2 Doel' if i==0 else "")
                     ax.hlines(y=row['Entry_Prijs'], xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='green', linestyles='-.', alpha=0.5, label='Entry' if i==0 else "")
 
-                    # Markers & Verbindingslijnen (blijven op de werkelijke exit prijzen)
                     ax.scatter(row['Entry_Tijd'], row['Entry_Prijs'], color='green', marker='^', s=150, zorder=6, edgecolors='black')
                     ax.scatter(row['Exit_Tijd_1'], row['Exit_Prijs_1'], color='orange', marker='o', s=100, zorder=6, edgecolors='black')
                     ax.scatter(row['Exit_Tijd_2'], row['Exit_Prijs_2'], color='blue', marker='v', s=150, zorder=6, edgecolors='black')
@@ -304,16 +302,19 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, output_dir=DAILY_P
                     
                     tp1_pure_rit = ((row['Exit_Prijs_1'] - row['Entry_Prijs']) / row['Entry_Prijs']) * 100
                     voorlopig_pct = (pnl_deel_1 / inleg) * 100 if inleg > 0 else 0
-                    definitief_pct = (pnl_euro / inleg) * 100 if inleg > 0 else 0
+                    definitief_pct_inleg = (pnl_euro / inleg) * 100 if inleg > 0 else 0
+                    
+                    # Bereken impact op de totale portfolio (gegeven de positie grootte)
+                    definitief_pct_portfolio = definitief_pct_inleg / max_slots
                     
                     clean_res = row['Resultaat'].replace('✅', '').replace('❌', '').replace('⏳', '').replace('➖', '').strip()
 
                     tekst_lijnen.append(f"Tijd: {tijd_str} | {clean_res}")
-                    tekst_lijnen.append(f"   -> Werkelijke Rit: {tp1_pure_rit:+.3f}%")
-                    tekst_lijnen.append(f"   -> Voorlopig Winst: {voorlopig_pct:+.2f}% (op helft)")
-                    tekst_lijnen.append(f"   -> Definitief Winst: {definitief_pct:+.2f}% (totaal)")
+                    tekst_lijnen.append(f"   -> Werkelijke Rit tp1: {tp1_pure_rit:+.3f}%")
+                    tekst_lijnen.append(f"   -> Winst op Inleg    : {definitief_pct_inleg:+.2f}%")
+                    tekst_lijnen.append(f"   -> Winst Portfolio   : {definitief_pct_portfolio:+.2f}% (1/{max_slots} size)")
                     tekst_lijnen.append(f"   -> Units: {eenheden}")
-                    tekst_lijnen.append("-" * 43)
+                    tekst_lijnen.append("-" * 45)
 
         # Dag samenvatting
         dag_pct_totaal = 0
@@ -327,10 +328,10 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, output_dir=DAILY_P
         tekst_lijnen.append(f"Eindbalans  : Euro {hypo_eind:,.0f}")
         tekst_lijnen.append(f"Dag Winst   : {dag_pct_totaal:+.2f}%")
 
-        # Voeg tekstblok toe
+        # Voeg tekstblok toe met iets meer marge aan de zijkant voor de tekstlengte
         volledige_tekst = "\n".join(tekst_lijnen)
-        plt.subplots_adjust(right=0.72) 
-        fig.text(0.74, 0.5, volledige_tekst, fontsize=10, family='monospace', 
+        plt.subplots_adjust(right=0.70) 
+        fig.text(0.72, 0.5, volledige_tekst, fontsize=10, family='monospace', 
                  verticalalignment='center', bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=1'))
 
         ax.set_title(f'Trade Verloop incl. Pending Orders & Limits - {datum_str}', fontsize=16)
@@ -418,7 +419,8 @@ if __name__ == "__main__":
             plt.close()
             
             print(f"📈 Visualiseren van alle trading dagen...")
-            visualiseer_alle_dagen(df_ready, df_signals, df_portfolio)
+            # Belangrijk: max_slots wordt hier doorgegeven!
+            visualiseer_alle_dagen(df_ready, df_signals, df_portfolio, max_slots=BESTE_SLOTS)
 
             print("\n📊 Samenvatting Resultaten (alleen gevulde orders):")
             print(df_portfolio['Resultaat'].value_counts())
