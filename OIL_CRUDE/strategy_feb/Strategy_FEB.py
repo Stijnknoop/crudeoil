@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')  
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates 
 
 # =============================================================
 # 0. CONFIGURATIE VOOR GITHUB
@@ -33,9 +34,14 @@ def fetch_crude_data(user="Stijnknoop", repo="crudeoil", folder="OIL_CRUDE"):
             return None
         
         df = pd.read_csv(csv_file['download_url'])
-        df['time'] = pd.to_datetime(df['time']).dt.tz_localize(None)
-        time_ny = df['time'].dt.tz_localize('Europe/Amsterdam', ambiguous='NaT', nonexistent='NaT').dt.tz_convert('America/New_York')
-        df['time_us'] = time_ny.dt.tz_localize(None)
+        
+        # Tijd en getallen veiligstellen, we doen de ffill en sessies in de volgende functie!
+        df['time'] = pd.to_datetime(df['time'], format='ISO8601').dt.tz_localize(None)
+        
+        kolommen_naar_getal = ["open_bid", "high_bid", "low_bid", "close_bid", "open_ask", "high_ask", "low_ask", "close_ask"]
+        for col in kolommen_naar_getal:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         
         return df.sort_values('time').reset_index(drop=True)
     except Exception as e:
@@ -43,12 +49,39 @@ def fetch_crude_data(user="Stijnknoop", repo="crudeoil", folder="OIL_CRUDE"):
         return None
 
 def prep_and_engineer_features(df):
-    is_new_session = df['time'].diff() > pd.Timedelta(minutes=45)
-    is_new_session.iloc[0] = True
-    df['session_id'] = is_new_session.cumsum()
+    print("   -> Tijdlijn dichttrekken (ffill) en sessies bepalen...")
+    
+    # 1. Jouw originele ffill: trek de tijdlijn recht en vul gaten met de vorige prijs
+    df = df.set_index('time').sort_index()
+    df = df[~df.index.duplicated(keep='first')]
+    df = df.resample('1min').ffill().dropna().reset_index()
 
-    df = df.set_index('time').groupby('session_id').resample('1min').ffill()
-    df = df.drop(columns=['session_id'], errors='ignore').reset_index()
+    # 2. Sessie detectie: zoek naar lijnen die langer dan 45 min stil staan (de live-bot logica)
+    df['price_diff'] = df['close_bid'].diff()
+    df['is_flat'] = df['price_diff'] == 0
+    df['block_id'] = (df['is_flat'] != df['is_flat'].shift()).cumsum()
+
+    break_blocks = []
+    stats = df[df['is_flat']].groupby('block_id').agg(count=('time', 'count'))
+    
+    # Als een stilstaande periode groter is dan 45 minuten, markeer als "pauze/weekend"
+    for bid, row in stats.iterrows():
+        if row['count'] > 45: 
+            break_blocks.append(bid)
+
+    # 3. Wijs sessie-ID's toe. Geef pauzes het ID -1.
+    df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
+    df['new_sess'] = df['is_trading_active'] & ((df['is_trading_active'].shift(1) == False) | (df.index == 0))
+    df['session_id'] = df['new_sess'].cumsum()
+    df.loc[~df['is_trading_active'], 'session_id'] = -1
+    
+    # Verwijder de platte weekenden/nachten zodat de strategie alleen pure actie ziet!
+    df = df[df['session_id'] != -1].copy()
+
+    print("   -> Features engineeren (MA, Range, Buckets)...")
+    # 4. Tijdzones en Buckets
+    time_ny = df['time'].dt.tz_localize('Europe/Amsterdam', ambiguous='NaT', nonexistent='NaT').dt.tz_convert('America/New_York')
+    df['time_us'] = time_ny.dt.tz_localize(None)
 
     df['time_bucket'] = df['time_us'].dt.floor('30min').dt.time
     df['session_open'] = df.groupby('session_id')['close_bid'].transform('first')
@@ -283,38 +316,38 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
                         start_balans_dag = huidige_balans - pnl_euro
                     totale_winst_euro += pnl_euro
 
-                    target_1 = row.get('Target_Prijs_1', row['Exit_Prijs_1'])
-                    target_2 = row.get('Target_Prijs_2', row['Exit_Prijs_2'])
+                target_1 = row.get('Target_Prijs_1', row['Exit_Prijs_1'])
+                target_2 = row.get('Target_Prijs_2', row['Exit_Prijs_2'])
 
-                    ax.hlines(y=target_1, xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='orange', linestyles=':', alpha=0.8, label='TP1 Doel' if i==0 else "")
-                    ax.hlines(y=target_2, xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='blue', linestyles=':', alpha=0.8, label='TP2 Doel' if i==0 else "")
-                    ax.hlines(y=row['Entry_Prijs'], xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='green', linestyles='-.', alpha=0.5, label='Entry' if i==0 else "")
+                ax.hlines(y=target_1, xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='orange', linestyles=':', alpha=0.8, label='TP1 Doel' if i==0 else "")
+                ax.hlines(y=target_2, xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='blue', linestyles=':', alpha=0.8, label='TP2 Doel' if i==0 else "")
+                ax.hlines(y=row['Entry_Prijs'], xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='green', linestyles='-.', alpha=0.5, label='Entry' if i==0 else "")
 
-                    ax.scatter(row['Entry_Tijd'], row['Entry_Prijs'], color='green', marker='^', s=150, zorder=6, edgecolors='black')
-                    ax.scatter(row['Exit_Tijd_1'], row['Exit_Prijs_1'], color='orange', marker='o', s=100, zorder=6, edgecolors='black')
-                    ax.scatter(row['Exit_Tijd_2'], row['Exit_Prijs_2'], color='blue', marker='v', s=150, zorder=6, edgecolors='black')
-                    
-                    ax.plot([row['Entry_Tijd'], row['Exit_Tijd_1']], [row['Entry_Prijs'], row['Exit_Prijs_1']], color='orange', linestyle='--', alpha=0.6)
-                    ax.plot([row['Exit_Tijd_1'], row['Exit_Tijd_2']], [row['Exit_Prijs_1'], row['Exit_Prijs_2']], color='blue', linestyle='--', alpha=0.6)
+                ax.scatter(row['Entry_Tijd'], row['Entry_Prijs'], color='green', marker='^', s=150, zorder=6, edgecolors='black')
+                ax.scatter(row['Exit_Tijd_1'], row['Exit_Prijs_1'], color='orange', marker='o', s=100, zorder=6, edgecolors='black')
+                ax.scatter(row['Exit_Tijd_2'], row['Exit_Prijs_2'], color='blue', marker='v', s=150, zorder=6, edgecolors='black')
+                
+                ax.plot([row['Entry_Tijd'], row['Exit_Tijd_1']], [row['Entry_Prijs'], row['Exit_Prijs_1']], color='orange', linestyle='--', alpha=0.6)
+                ax.plot([row['Exit_Tijd_1'], row['Exit_Tijd_2']], [row['Exit_Prijs_1'], row['Exit_Prijs_2']], color='blue', linestyle='--', alpha=0.6)
 
-                    inleg = eenheden * row['Entry_Prijs']
-                    
-                    tp1_pure_rit = ((row['Exit_Prijs_1'] - row['Entry_Prijs']) / row['Entry_Prijs']) * 100
-                    pct_tp1 = (pnl_deel_1 / inleg) * 100 if inleg > 0 else 0
-                    pct_tp2 = (pnl_deel_2 / inleg) * 100 if inleg > 0 else 0
-                    
-                    definitief_pct_inleg = (pnl_euro / inleg) * 100 if inleg > 0 else 0
-                    definitief_pct_portfolio = definitief_pct_inleg / max_slots
-                    
-                    clean_res = row['Resultaat'].replace('✅', '').replace('❌', '').replace('⏳', '').replace('➖', '').strip()
+                inleg = eenheden * row['Entry_Prijs']
+                
+                tp1_pure_rit = ((row['Exit_Prijs_1'] - row['Entry_Prijs']) / row['Entry_Prijs']) * 100 if row['Entry_Prijs'] > 0 else 0
+                pct_tp1 = (pnl_deel_1 / inleg) * 100 if inleg > 0 else 0
+                pct_tp2 = (pnl_deel_2 / inleg) * 100 if inleg > 0 else 0
+                
+                definitief_pct_inleg = (pnl_euro / inleg) * 100 if inleg > 0 else 0
+                definitief_pct_portfolio = definitief_pct_inleg / max_slots
+                
+                clean_res = str(row['Resultaat']).replace('✅', '').replace('❌', '').replace('⏳', '').replace('➖', '').strip()
 
-                    tekst_lijnen.append(f"Tijd: {tijd_str} | {clean_res}")
-                    tekst_lijnen.append(f"   -> Werkelijke Rit tp1: {tp1_pure_rit:+.3f}%")
-                    tekst_lijnen.append(f"   -> Winst op tp1/tp2  : {pct_tp1:+.2f}% en {pct_tp2:+.2f}%")
-                    tekst_lijnen.append(f"   -> Winst einde trade : {definitief_pct_inleg:+.2f}%")
-                    tekst_lijnen.append(f"   -> Winst Portfolio   : {definitief_pct_portfolio:+.2f}% (1/{max_slots} size)")
-                    tekst_lijnen.append(f"   -> Units: {eenheden}")
-                    tekst_lijnen.append("-" * 45)
+                tekst_lijnen.append(f"Tijd: {tijd_str} | {clean_res}")
+                tekst_lijnen.append(f"   -> Werkelijke Rit tp1: {tp1_pure_rit:+.3f}%")
+                tekst_lijnen.append(f"   -> Winst op tp1/tp2  : {pct_tp1:+.2f}% en {pct_tp2:+.2f}%")
+                tekst_lijnen.append(f"   -> Winst einde trade : {definitief_pct_inleg:+.2f}%")
+                tekst_lijnen.append(f"   -> Winst Portfolio   : {definitief_pct_portfolio:+.2f}% (1/{max_slots} size)")
+                tekst_lijnen.append(f"   -> Units: {eenheden}")
+                tekst_lijnen.append("-" * 45)
 
         dag_pct_totaal = 0
         if start_balans_dag is not None and start_balans_dag > 0:
@@ -333,10 +366,13 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
                  verticalalignment='center', bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=1'))
 
         ax.set_title(f'Trade Verloop incl. Pending Orders & Limits - {datum_str}', fontsize=16)
-        ax.set_xlabel('Tijd', fontsize=12)
+        ax.set_xlabel('Tijdlijn', fontsize=12)
         ax.set_ylabel('Prijs', fontsize=12)
-        ax.grid(True, linestyle=':', alpha=0.6)
+        
+        # --- NIEUW: Correcte en strakke tijdsweergave op de as ---
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         ax.tick_params(axis='x', rotation=45)
+        ax.grid(True, linestyle=':', alpha=0.6)
         
         handles, labels = ax.get_legend_handles_labels()
         if handles:
@@ -361,7 +397,7 @@ if __name__ == "__main__":
     df_raw = fetch_crude_data()
     
     if df_raw is not None:
-        print("⚙️ Features engineeren...")
+        print("⚙️ Features engineeren en sessies filteren...")
         df_ready = prep_and_engineer_features(df_raw)
         
         print(f"🚀 Signalen genereren met Limit Order Logica (Kans {BESTE_KANS}, Dal {BESTE_DALING}, Scale-Out {SCALE_OUT_MULTIPLIER})...")
