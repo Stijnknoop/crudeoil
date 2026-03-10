@@ -2,6 +2,7 @@ import os
 import requests
 import pandas as pd
 import numpy as np
+import pytz  # NIEUW: Nodig voor de zomertijd/wintertijd berekening
 import matplotlib
 matplotlib.use('Agg')  
 import matplotlib.pyplot as plt
@@ -15,6 +16,9 @@ DAILY_PLOTS_DIR = os.path.join(OUTPUT_DIR, "DailyPlots")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(DAILY_PLOTS_DIR, exist_ok=True)
+
+# Tijdzone instellen voor correcte conversie
+NL_TZ = pytz.timezone("Europe/Amsterdam")
 
 # =============================================================
 # 1. DATA OPHALEN & SCHOONMAKEN
@@ -34,7 +38,9 @@ def fetch_crude_data(user="Stijnknoop", repo="crudeoil", folder="OIL_CRUDE"):
             return None
         
         df = pd.read_csv(csv_file['download_url'])
-        df['time'] = pd.to_datetime(df['time'], format='ISO8601').dt.tz_localize(None)
+        
+        # DE FIX: Forceer UTC en converteer netjes naar Nederlandse Tijd (incl. zomertijd/wintertijd)
+        df['time'] = pd.to_datetime(df['time'], utc=True).dt.tz_convert(NL_TZ).dt.tz_localize(None)
         
         kolommen_naar_getal = ["open_bid", "high_bid", "low_bid", "close_bid", "open_ask", "high_ask", "low_ask", "close_ask"]
         for col in kolommen_naar_getal:
@@ -176,7 +182,6 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
                     winst_momenten_1 = data_na[data_na['high_bid'] >= target_1]
                     
                     if winst_momenten_1.empty:
-                        # Als dit live (vandaag) is blijft hij open, anders force sluiten we hem aan het einde van de gearchiveerde dag.
                         if is_laatste_sessie_van_dataset:
                             exit_t_1 = exit_t_2 = pd.NaT
                             exit_p_1 = exit_p_2 = data_na['close_bid'].iloc[-1]
@@ -241,7 +246,6 @@ def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_mult
     for _, trade in df_executed.iterrows():
         nog_actief = []
         for ot in actieve_trades:
-            # Respecteert nu perfect NaT (open trades) in het slot-limiet!
             if pd.notna(ot['exit_time']) and trade['Entry_Tijd'] >= ot['exit_time']: 
                 huidige_balans += ot['pnl']
             else: 
@@ -316,7 +320,6 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
             else:
                 port_row = df_portfolio[df_portfolio['Signaal_Tijd'] == row['Signaal_Tijd']]
                 
-                # Afgewezen trades (max slots bereikt) worden niet meer getekend.
                 if port_row.empty:
                     tekst_lijnen.append(f"Tijd: {tijd_str} | [x] SKIPPED (MAX {max_slots} TRADES)")
                     tekst_lijnen.append("-" * 45)
@@ -347,7 +350,6 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
 
                 ax.scatter(row['Entry_Tijd'], row['Entry_Prijs'], color='green', marker='^', s=150, zorder=6, edgecolors='black')
                 
-                # Zorg dat we geen valse diagonale lijnen tekenen als de trade nog open is
                 if not is_open_geen_tp and pd.notna(row['Exit_Tijd_1']):
                     ax.scatter(row['Exit_Tijd_1'], row['Exit_Prijs_1'], color='orange', marker='o', s=100, zorder=6, edgecolors='black')
                     ax.plot([row['Entry_Tijd'], row['Exit_Tijd_1']], [row['Entry_Prijs'], row['Exit_Prijs_1']], color='orange', linestyle='--', alpha=0.6)
