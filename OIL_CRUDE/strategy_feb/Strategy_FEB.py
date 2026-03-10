@@ -34,8 +34,6 @@ def fetch_crude_data(user="Stijnknoop", repo="crudeoil", folder="OIL_CRUDE"):
             return None
         
         df = pd.read_csv(csv_file['download_url'])
-        
-        # Tijd en getallen veiligstellen, we doen de ffill en sessies in de volgende functie!
         df['time'] = pd.to_datetime(df['time'], format='ISO8601').dt.tz_localize(None)
         
         kolommen_naar_getal = ["open_bid", "high_bid", "low_bid", "close_bid", "open_ask", "high_ask", "low_ask", "close_ask"]
@@ -43,7 +41,9 @@ def fetch_crude_data(user="Stijnknoop", repo="crudeoil", folder="OIL_CRUDE"):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        return df.sort_values('time').reset_index(drop=True)
+        # Anti-repainting op historie
+        df = df.sort_values('time').drop_duplicates(subset='time', keep='first').reset_index(drop=True)
+        return df
     except Exception as e:
         print(f"❌ Fout bij ophalen data: {e}")
         return None
@@ -51,35 +51,28 @@ def fetch_crude_data(user="Stijnknoop", repo="crudeoil", folder="OIL_CRUDE"):
 def prep_and_engineer_features(df):
     print("   -> Tijdlijn dichttrekken (ffill) en sessies bepalen...")
     
-    # 1. Jouw originele ffill: trek de tijdlijn recht en vul gaten met de vorige prijs
     df = df.set_index('time').sort_index()
-    df = df[~df.index.duplicated(keep='first')]
     df = df.resample('1min').ffill().dropna().reset_index()
 
-    # 2. Sessie detectie: zoek naar lijnen die langer dan 45 min stil staan (de live-bot logica)
     df['price_diff'] = df['close_bid'].diff()
     df['is_flat'] = df['price_diff'] == 0
     df['block_id'] = (df['is_flat'] != df['is_flat'].shift()).cumsum()
 
     break_blocks = []
     stats = df[df['is_flat']].groupby('block_id').agg(count=('time', 'count'))
-    
-    # Als een stilstaande periode groter is dan 45 minuten, markeer als "pauze/weekend"
     for bid, row in stats.iterrows():
         if row['count'] > 45: 
             break_blocks.append(bid)
 
-    # 3. Wijs sessie-ID's toe. Geef pauzes het ID -1.
     df['is_trading_active'] = ~df['block_id'].isin(break_blocks)
     df['new_sess'] = df['is_trading_active'] & ((df['is_trading_active'].shift(1) == False) | (df.index == 0))
     df['session_id'] = df['new_sess'].cumsum()
     df.loc[~df['is_trading_active'], 'session_id'] = -1
     
-    # Verwijder de platte weekenden/nachten zodat de strategie alleen pure actie ziet!
+    # Filter weekenden en nachten eruit
     df = df[df['session_id'] != -1].copy()
 
     print("   -> Features engineeren (MA, Range, Buckets)...")
-    # 4. Tijdzones en Buckets
     time_ny = df['time'].dt.tz_localize('Europe/Amsterdam', ambiguous='NaT', nonexistent='NaT').dt.tz_convert('America/New_York')
     df['time_us'] = time_ny.dt.tz_localize(None)
 
@@ -117,6 +110,8 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
 
     for sessie_idx in range(40, len(unique_sessions)):
         huidige_sessie = unique_sessions[sessie_idx]
+        is_laatste_sessie_van_dataset = (sessie_idx == len(unique_sessions) - 1)
+        
         sessie_data = df[df['session_id'] == huidige_sessie].sort_values('time')
         historie = df[df['session_id'].isin(unique_sessions[sessie_idx - 40 : sessie_idx])]
 
@@ -181,9 +176,15 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
                     winst_momenten_1 = data_na[data_na['high_bid'] >= target_1]
                     
                     if winst_momenten_1.empty:
-                        exit_t_1 = exit_t_2 = data_na['time'].iloc[-1]
-                        exit_p_1 = exit_p_2 = data_na['close_bid'].iloc[-1]
-                        res = 'VERLIES ❌'
+                        # Als dit live (vandaag) is blijft hij open, anders force sluiten we hem aan het einde van de gearchiveerde dag.
+                        if is_laatste_sessie_van_dataset:
+                            exit_t_1 = exit_t_2 = pd.NaT
+                            exit_p_1 = exit_p_2 = data_na['close_bid'].iloc[-1]
+                            res = 'OPEN (GEEN TP) ⏳'
+                        else:
+                            exit_t_1 = exit_t_2 = data_na['time'].iloc[-1]
+                            exit_p_1 = exit_p_2 = data_na['close_bid'].iloc[-1]
+                            res = 'VERLIES ❌'
                     else:
                         exit_t_1 = winst_momenten_1['time'].iloc[0]
                         exit_p_1 = target_1
@@ -191,7 +192,12 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
                         data_na_half = data_na[data_na['time'] > exit_t_1]
                         
                         if data_na_half.empty:
-                            exit_t_2, exit_p_2, res = exit_t_1, exit_p_1, 'HALVE WINST / EINDE ✅⏳'
+                            if is_laatste_sessie_van_dataset:
+                                exit_t_2, exit_p_2 = pd.NaT, data_na['close_bid'].iloc[-1]
+                                res = 'OPEN (TP1 HIT) ⏳'
+                            else:
+                                exit_t_2, exit_p_2 = exit_t_1, exit_p_1
+                                res = 'HALVE WINST / EINDE ✅'
                         else:
                             hit_full = data_na_half[data_na_half['high_bid'] >= target_full]
                             hit_be = data_na_half[data_na_half['low_bid'] <= c_prijs_ask]
@@ -204,7 +210,12 @@ def genereer_signalen_dynamisch(df, min_kans, min_samples, max_kans_daling, scal
                             elif idx_be <= idx_full and idx_be != float('inf'):
                                 exit_t_2, exit_p_2, res = hit_be['time'].iloc[0], c_prijs_ask, 'HALVE WINST / BE ✅➖'
                             else:
-                                exit_t_2, exit_p_2, res = data_na_half['time'].iloc[-1], data_na_half['close_bid'].iloc[-1], 'HALVE WINST / EINDE ✅⏳'
+                                if is_laatste_sessie_van_dataset:
+                                    exit_t_2, exit_p_2 = pd.NaT, data_na_half['close_bid'].iloc[-1]
+                                    res = 'OPEN (TP1 HIT) ⏳'
+                                else:
+                                    exit_t_2, exit_p_2 = data_na_half['time'].iloc[-1], data_na_half['close_bid'].iloc[-1]
+                                    res = 'HALVE WINST / EINDE ✅⏳'
 
                     alle_trades.append({
                         'Sessie': huidige_sessie, 'Signaal_Tijd': signaal_tijd,
@@ -230,7 +241,8 @@ def run_portfolio_sim(df_trades, max_slots, start_kapitaal=100000, contract_mult
     for _, trade in df_executed.iterrows():
         nog_actief = []
         for ot in actieve_trades:
-            if trade['Entry_Tijd'] >= ot['exit_time']: 
+            # Respecteert nu perfect NaT (open trades) in het slot-limiet!
+            if pd.notna(ot['exit_time']) and trade['Entry_Tijd'] >= ot['exit_time']: 
                 huidige_balans += ot['pnl']
             else: 
                 nog_actief.append(ot)
@@ -302,44 +314,54 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
                 tekst_lijnen.append(f"Tijd: {tijd_str} | [x] CANCELLED")
                 tekst_lijnen.append("-" * 45)
             else:
-                port_row = df_portfolio[df_portfolio['Entry_Tijd'] == row['Entry_Tijd']]
+                port_row = df_portfolio[df_portfolio['Signaal_Tijd'] == row['Signaal_Tijd']]
                 
-                if not port_row.empty:
-                    port_data = port_row.iloc[0]
-                    eenheden = port_data.get('Gekochte_Eenheden', 0)
-                    pnl_euro = port_data.get('PnL_Euro', 0)
-                    pnl_deel_1 = port_data.get('PnL_Deel_1', 0)
-                    pnl_deel_2 = port_data.get('PnL_Deel_2', 0)
-                    huidige_balans = port_data.get('Account_Balance', 100000)
-                    
-                    if start_balans_dag is None:
-                        start_balans_dag = huidige_balans - pnl_euro
-                    totale_winst_euro += pnl_euro
+                # Afgewezen trades (max slots bereikt) worden niet meer getekend.
+                if port_row.empty:
+                    tekst_lijnen.append(f"Tijd: {tijd_str} | [x] SKIPPED (MAX {max_slots} TRADES)")
+                    tekst_lijnen.append("-" * 45)
+                    continue
 
+                port_data = port_row.iloc[0]
+                eenheden = port_data.get('Gekochte_Eenheden', 0)
+                pnl_euro = port_data.get('PnL_Euro', 0)
+                pnl_deel_1 = port_data.get('PnL_Deel_1', 0)
+                pnl_deel_2 = port_data.get('PnL_Deel_2', 0)
+                huidige_balans = port_data.get('Account_Balance', 100000)
+                
+                if start_balans_dag is None:
+                    start_balans_dag = huidige_balans - pnl_euro
+                totale_winst_euro += pnl_euro
+
+                clean_res = str(row['Resultaat']).replace('✅', '').replace('❌', '').replace('⏳', '').replace('➖', '').strip()
+                is_open_geen_tp = "OPEN (GEEN TP)" in clean_res
+                is_open_tp1_hit = "OPEN (TP1 HIT)" in clean_res
+
+                exit_tijd_plot = row['Exit_Tijd_2'] if pd.notna(row['Exit_Tijd_2']) else dag_data['time'].iloc[-1]
                 target_1 = row.get('Target_Prijs_1', row['Exit_Prijs_1'])
                 target_2 = row.get('Target_Prijs_2', row['Exit_Prijs_2'])
 
-                ax.hlines(y=target_1, xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='orange', linestyles=':', alpha=0.8, label='TP1 Doel' if i==0 else "")
-                ax.hlines(y=target_2, xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='blue', linestyles=':', alpha=0.8, label='TP2 Doel' if i==0 else "")
-                ax.hlines(y=row['Entry_Prijs'], xmin=row['Entry_Tijd'], xmax=row['Exit_Tijd_2'], colors='green', linestyles='-.', alpha=0.5, label='Entry' if i==0 else "")
+                ax.hlines(y=target_1, xmin=row['Entry_Tijd'], xmax=exit_tijd_plot, colors='orange', linestyles=':', alpha=0.8)
+                ax.hlines(y=target_2, xmin=row['Entry_Tijd'], xmax=exit_tijd_plot, colors='blue', linestyles=':', alpha=0.8)
+                ax.hlines(y=row['Entry_Prijs'], xmin=row['Entry_Tijd'], xmax=exit_tijd_plot, colors='green', linestyles='-.', alpha=0.5)
 
                 ax.scatter(row['Entry_Tijd'], row['Entry_Prijs'], color='green', marker='^', s=150, zorder=6, edgecolors='black')
-                ax.scatter(row['Exit_Tijd_1'], row['Exit_Prijs_1'], color='orange', marker='o', s=100, zorder=6, edgecolors='black')
-                ax.scatter(row['Exit_Tijd_2'], row['Exit_Prijs_2'], color='blue', marker='v', s=150, zorder=6, edgecolors='black')
                 
-                ax.plot([row['Entry_Tijd'], row['Exit_Tijd_1']], [row['Entry_Prijs'], row['Exit_Prijs_1']], color='orange', linestyle='--', alpha=0.6)
-                ax.plot([row['Exit_Tijd_1'], row['Exit_Tijd_2']], [row['Exit_Prijs_1'], row['Exit_Prijs_2']], color='blue', linestyle='--', alpha=0.6)
+                # Zorg dat we geen valse diagonale lijnen tekenen als de trade nog open is
+                if not is_open_geen_tp and pd.notna(row['Exit_Tijd_1']):
+                    ax.scatter(row['Exit_Tijd_1'], row['Exit_Prijs_1'], color='orange', marker='o', s=100, zorder=6, edgecolors='black')
+                    ax.plot([row['Entry_Tijd'], row['Exit_Tijd_1']], [row['Entry_Prijs'], row['Exit_Prijs_1']], color='orange', linestyle='--', alpha=0.6)
+                
+                if not is_open_geen_tp and not is_open_tp1_hit and pd.notna(row['Exit_Tijd_2']):
+                    ax.scatter(row['Exit_Tijd_2'], row['Exit_Prijs_2'], color='blue', marker='v', s=150, zorder=6, edgecolors='black')
+                    ax.plot([row.get('Exit_Tijd_1', row['Entry_Tijd']), row['Exit_Tijd_2']], [row.get('Exit_Prijs_1', row['Entry_Prijs']), row['Exit_Prijs_2']], color='blue', linestyle='--', alpha=0.6)
 
                 inleg = eenheden * row['Entry_Prijs']
-                
                 tp1_pure_rit = ((row['Exit_Prijs_1'] - row['Entry_Prijs']) / row['Entry_Prijs']) * 100 if row['Entry_Prijs'] > 0 else 0
                 pct_tp1 = (pnl_deel_1 / inleg) * 100 if inleg > 0 else 0
                 pct_tp2 = (pnl_deel_2 / inleg) * 100 if inleg > 0 else 0
-                
                 definitief_pct_inleg = (pnl_euro / inleg) * 100 if inleg > 0 else 0
                 definitief_pct_portfolio = definitief_pct_inleg / max_slots
-                
-                clean_res = str(row['Resultaat']).replace('✅', '').replace('❌', '').replace('⏳', '').replace('➖', '').strip()
 
                 tekst_lijnen.append(f"Tijd: {tijd_str} | {clean_res}")
                 tekst_lijnen.append(f"   -> Werkelijke Rit tp1: {tp1_pure_rit:+.3f}%")
@@ -369,7 +391,6 @@ def visualiseer_alle_dagen(df_data, df_signals, df_portfolio, max_slots=3, outpu
         ax.set_xlabel('Tijdlijn', fontsize=12)
         ax.set_ylabel('Prijs', fontsize=12)
         
-        # --- NIEUW: Correcte en strakke tijdsweergave op de as ---
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         ax.tick_params(axis='x', rotation=45)
         ax.grid(True, linestyle=':', alpha=0.6)
@@ -419,21 +440,17 @@ if __name__ == "__main__":
 
             final_score, sharpe_ann = bereken_zuivere_score(df_portfolio)
             
-            # Hou originele balance logica voor export doeleinden
             df_portfolio['Account_Balance'] = 100000 + df_portfolio['PnL_Euro'].cumsum()
 
-            # --- NIEUW: Converteer naar een Dagelijkse Equity Curve ---
             df_daily = df_portfolio.groupby(df_portfolio['Entry_Tijd'].dt.date)['PnL_Euro'].sum().reset_index()
             df_daily.rename(columns={'Entry_Tijd': 'Datum', 'PnL_Euro': 'Dag_PnL'}, inplace=True)
             df_daily['Account_Balance'] = 100000 + df_daily['Dag_PnL'].cumsum()
 
-            # Zorg dat de grafiek netjes op 100.000 begint (dag 0)
             df_daily['Datum'] = pd.to_datetime(df_daily['Datum'])
             start_datum = df_daily['Datum'].iloc[0] - pd.Timedelta(days=1)
             df_start = pd.DataFrame({'Datum': [start_datum], 'Dag_PnL': [0], 'Account_Balance': [100000]})
             df_daily = pd.concat([df_start, df_daily], ignore_index=True)
 
-            # --- PLOTTEN VAN DE DAGELIJKSE EQUITY CURVE ---
             plt.figure(figsize=(15, 8))
             plt.plot(df_daily['Datum'], df_daily['Account_Balance'], color='#D4AF37', linewidth=2.5, marker='o', markersize=6,
                      label=f'Dagelijkse Compounding (Kans: {BESTE_KANS} | Target 1: {SCALE_OUT_MULTIPLIER}x | Slots: {BESTE_SLOTS})')
