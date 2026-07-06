@@ -10,6 +10,7 @@ from datetime import datetime, time
 DATA_LIMIT = 5000         # Match met je ML engine
 RATIO_LOOKBACK = 240       # 4 uur rolling window om de 'normale' verhouding te bepalen
 Z_THRESHOLD = 1.5          # Vanaf welke Z-score we de elastiek-trade triggeren
+FIXED_TP_PCT = 0.15        # 🔥 NIEUW: Vaste Take Profit in % op de totale combinatie (bvb 0.15%)
 MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
 
 # Mappenstructuur
@@ -22,7 +23,7 @@ OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # 
 OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell dashboard
 
 def run_multi_backtest():
-    print(f"🚀 MANTRA Arbitrage Portfolio Engine Gestart...")
+    print(f"🚀 MANTRA Arbitrage Portfolio Engine (with Fixed TP) Gestart...")
     if not os.path.exists(INPUT_CSV):
         print(f"❌ Fout: {INPUT_CSV} ontbreekt. Run eerst de multi ML engine!")
         return
@@ -60,38 +61,49 @@ def run_multi_backtest():
         z_curr = row['z_score']
 
         # ---------------------------------------------------------------------
-        # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Check Convergence, SL, Timeout of EOD)
+        # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Check Fixed TP, Convergence, Timeout)
         # ---------------------------------------------------------------------
         if position is not None:
-            converged = False
-            if position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
-                converged = True
+            # Bereken eerst de realtime zwevende PnL van deze specifieke minuut
+            if position == 'US500_SHORT_GOLD_LONG':
+                pct_us500 = ((entry_us500 - row['US500_close_ask']) / entry_us500) * 100
+                pct_gold = ((row['GOLD_close_bid'] - entry_gold) / entry_gold) * 100
+            elif position == 'US500_LONG_GOLD_SHORT':
+                pct_us500 = ((row['US500_close_bid'] - entry_us500) / entry_us500) * 100
+                pct_gold = ((entry_gold - row['GOLD_close_ask']) / entry_gold) * 100
+            
+            # Reëel rendement over de totale portfolio-inleg (gemiddelde van de legs)
+            float_pnl_combination = (pct_us500 + pct_gold) / 2
+            
+            # Evalueer de exit-condities op volgorde van prioriteit
+            trigger_exit = False
+            reason = ""
+
+            # 1. Check of de Vaste Take Profit (%) is bereikt
+            if float_pnl_combination >= FIXED_TP_PCT:
+                trigger_exit = True
+                reason = "FIXED_TAKE_PROFIT"
+            
+            # 2. Check op Statistisch Herstel (Z-score Convergence)
+            elif position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
+                trigger_exit = True
                 reason = "MEAN_REVERSION_CONVERGENCE"
             elif position == 'US500_LONG_GOLD_SHORT' and z_curr >= 0:
-                converged = True
+                trigger_exit = True
                 reason = "MEAN_REVERSION_CONVERGENCE"
+            
+            # 3. Check op Timeouts & Marktsluiting
+            elif (i - entry_idx) >= MAX_DURATION:
+                trigger_exit = True
+                reason = "MAX_DURATION_TIMEOUT"
+            elif curr_time > time(22, 0):
+                trigger_exit = True
+                reason = "FORCED_EOD_CLOSE"
 
-            timeout = (i - entry_idx) >= MAX_DURATION
-            forced_eod = curr_time > time(22, 0)
-
-            if converged or timeout or forced_eod:
-                if not converged:
-                    reason = "FORCED_EOD_CLOSE" if forced_eod else "MAX_DURATION_TIMEOUT"
-                
-                if position == 'US500_SHORT_GOLD_LONG':
-                    pct_us500 = ((entry_us500 - row['US500_close_ask']) / entry_us500) * 100
-                    pct_gold = ((row['GOLD_close_bid'] - entry_gold) / entry_gold) * 100
-                    exit_us500 = row['US500_close_ask']
-                    exit_gold = row['GOLD_close_bid']
-                
-                elif position == 'US500_LONG_GOLD_SHORT':
-                    pct_us500 = ((row['US500_close_bid'] - entry_us500) / entry_us500) * 100
-                    pct_gold = ((entry_gold - row['GOLD_close_ask']) / entry_gold) * 100
-                    exit_us500 = row['US500_close_bid']
-                    exit_gold = row['GOLD_close_ask']
-                
-                # Portfolio-ROI: Gemiddelde van beide legs (dollar-neutral)
-                total_pnl_pct = (pct_us500 + pct_gold) / 2
+            # Als er een trigger afgaat, sluiten we de trade definitief af
+            if trigger_exit:
+                exit_us500 = row['US500_close_ask'] if position == 'US500_SHORT_GOLD_LONG' else row['US500_close_bid']
+                exit_gold = row['GOLD_close_bid'] if position == 'US500_SHORT_GOLD_LONG' else row['GOLD_close_ask']
                 
                 trades_log.append({
                     'type': position, 'entry_time': entry_time, 'exit_time': row['time'],
@@ -99,9 +111,9 @@ def run_multi_backtest():
                     'entry_us500': entry_us500, 'exit_us500': exit_us500,
                     'entry_gold': entry_gold, 'exit_gold': exit_gold,
                     'pct_us500': pct_us500, 'pct_gold': pct_gold,
-                    'pnl_pct': total_pnl_pct, 'reason': reason
+                    'pnl_pct': float_pnl_combination, 'reason': reason
                 })
-                equity_curve.append(equity_curve[-1] + total_pnl_pct)
+                equity_curve.append(equity_curve[-1] + float_pnl_combination)
                 position = None
                 continue
 
@@ -125,7 +137,7 @@ def run_multi_backtest():
                     entry_idx = i
 
     # ---------------------------------------------------------------------
-    # 📝 HERINGERIGTE LEDGER RAPPORTAGE (TIJD BIJ ELKAAR & ASSET BLOKKEN)
+    # 📝 LEDGER RAPPORTAGE MET MULTI-ASSET METRICS (.MD)
     # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
@@ -138,7 +150,6 @@ def run_multi_backtest():
             f.write(f"* **Average Return per Trade Combination:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
             
             f.write("### 📜 Geavanceerd Transactie Ledger (Leg Decomposition)\n")
-            # NIEUWE VOLGORDE: Tijdstempels -> Blok US500 -> Blok Goud -> Totaal & Reden
             f.write("| # | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Reason |\n")
             f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
             
@@ -146,7 +157,6 @@ def run_multi_backtest():
                 us500_pos = "SHORT" if "US500_SHORT" in r['type'] else "LONG"
                 gold_pos = "LONG" if "GOLD_LONG" in r['type'] else "SHORT"
                 
-                # Schrijf data weg in de loepzuivere, nieuwe logische volgorde
                 f.write(f"| {idx+1} | {r['entry_time'].strftime('%m-%d %H:%M')} | {r['exit_time'].strftime('%m-%d %H:%M')} | "
                         f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
                         f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
@@ -156,7 +166,7 @@ def run_multi_backtest():
 
     if len(trades_df) > 0:
         # ---------------------------------------------------------------------
-        # 📊 GRAFIEK 1: CUMULATIEVE VERMOGENSKROMME (ROI IN %)
+        # 📊 GRAFIEK 1: CUMULATIEVE VERMOGENSKROMME
         # ---------------------------------------------------------------------
         print("📊 Genereren van de Cumulative ROI Curve...")
         plt.figure(figsize=(12, 6))
