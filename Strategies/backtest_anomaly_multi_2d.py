@@ -16,10 +16,13 @@ MAX_DURATION = 30         # Strikte 30-minuten time exit voor scalping MR trades
 RESULT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
 INPUT_CSV = os.path.join(RESULT_DIR, "multi_asset_2d_analyzed_data.csv")
 OUTPUT_REPORT = os.path.join(RESULT_DIR, "multi_backtest_report.md")
-OUTPUT_CHART = os.path.join(RESULT_DIR, "multi_backtest_chart.png")
+
+# 📊 GEUPDATE: Twee aparte PNG outputs gedefinieerd om beide grafieken te bewaren
+OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # De paarse ROI vermogensgrafiek
+OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell dashboard
 
 def run_multi_backtest():
-    print(f"🚀 MANTRA Cross-Asset Execution Dashboard Engine Gestart...")
+    print(f"🚀 MANTRA Multi-Asset Dual-Plot Backtest Engine Gestart...")
     if not os.path.exists(INPUT_CSV):
         print(f"❌ Fout: {INPUT_CSV} ontbreekt. Run eerst de multi ML engine!")
         return
@@ -76,7 +79,6 @@ def run_multi_backtest():
                 
                 total_pnl_pct = pct_us500 + pct_gold
                 
-                # Sla index-posities op voor de grafische plotter
                 trades_log.append({
                     'type': position, 'entry_time': entry_time, 'exit_time': row['time'],
                     'entry_idx': entry_idx, 'exit_idx': i,
@@ -110,7 +112,7 @@ def run_multi_backtest():
                     entry_idx = i
 
     # ---------------------------------------------------------------------
-    # 📝 PERFORMANCE LEDGER RAPPORTAGE
+    # 📝 PERFORMANCE LEDGER RAPPORTAGE (.MD)
     # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
@@ -131,25 +133,42 @@ def run_multi_backtest():
         else:
             f.write("Geen cross-asset arbitrages geactiveerd binnen de huidige parameters.")
 
-    # ---------------------------------------------------------------------
-    # 📊 4️⃣ TWEEVOUDIG EXECUTION DASHBOARD GENEREREN
-    # ---------------------------------------------------------------------
     if len(trades_df) > 0:
-        print("📊 Genereren van gelaagd Execution Dashboard...")
+        # ---------------------------------------------------------------------
+        # 📊 GRAFIEK 1: CUMULATIEVE VERMOGENSKROMME (ROI IN %)
+        # ---------------------------------------------------------------------
+        print("📊 Genereren van de Cumulative ROI Curve...")
+        plt.figure(figsize=(12, 6))
+        plt.plot(range(len(equity_curve)), equity_curve, color='purple', linewidth=2, marker='o', label='Combined Pairs ROI (%)')
+        plt.axhline(0, color='black', linestyle='--', alpha=0.5)
+        plt.title("MANTRA Arbitrage Node: Cumulative Growth Curve (Return in %)", fontsize=11, fontweight='bold', loc='left')
+        plt.xlabel("Sequence of Closed Pairs Trades")
+        plt.ylabel("Net Combined Return (%)")
+        plt.grid(True, linestyle=':', alpha=0.5)
+        plt.legend(loc="upper left")
+        plt.tight_layout()
+        plt.savefig(OUTPUT_CHART_ROI, dpi=300)
+        plt.close()
+        print(f"✅ Gecumuleerde ROI-grafiek succesvol opgeslagen op: {OUTPUT_CHART_ROI}")
+
+        # ---------------------------------------------------------------------
+        # 📊 GRAFIEK 2: DUAL-ASSET EXECUTION DASHBOARD (MET ARROWS & SHADING)
+        # ---------------------------------------------------------------------
+        print("📊 Genereren van het gelaagde Execution Dashboard...")
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True)
         
-        # Baselines plotten
+        # Plot de baselines voor index en safe-haven
         ax1.plot(df.index, df['US500_price'], color='#1f78b4', alpha=0.4, label='US500 Mid Price')
         ax2.plot(df.index, df['GOLD_price'], color='#ffd700', alpha=0.5, label='GOLD Mid Price')
         
         legend_added = {"US_LONG": False, "US_SHORT": False, "AU_LONG": False, "AU_SHORT": False}
 
-        # Loop door de uitgevoerde trades om driehoeken te plotten
+        # Loop door de logs om orders visueel in te tekenen
         for t in trades_log:
             e_idx = t['entry_idx']
             x_idx = t['exit_idx']
             
-            # Teken een paars transparant vlak over de duur van de trade op beide assen
+            # Schaduwvlak over de exacte duur van de actieve arbitrage-leg
             ax1.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
             ax2.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
             
@@ -175,27 +194,27 @@ def run_multi_backtest():
                 ax2.scatter(e_idx, t['entry_gold'], color='green', marker='^', s=120, zorder=5, label=lbl)
                 legend_added["AU_LONG"] = True
 
-        # Opmaak As 1 (S&P 500)
+        # Opmaak voor de S&P 500 grafiek
         ax1.set_ylabel("US500 Index Price ($)", fontsize=10)
         ax1.grid(True, linestyle=':', alpha=0.4)
         ax1.legend(loc="upper left", frameon=True, shadow=True)
         ax1.set_title("MANTRA Arbitrage Node: Real-time Pairs Trading Execution Dashboard", fontsize=12, fontweight='bold', loc='left')
 
-        # Opmaak As 2 (Goud)
+        # Opmaak voor de Goud grafiek
         ax2.set_ylabel("Gold Price ($)", fontsize=10)
         ax2.grid(True, linestyle=':', alpha=0.4)
         ax2.legend(loc="upper left", frameon=True, shadow=True)
         
-        # X-as tijdsnotatie synchroniseren
+        # Synchronisatie van de X-as tijdsnotatie
         num_ticks = 8
         tick_indices = np.linspace(0, len(df) - 1, num_ticks, dtype=int)
         plt.xticks(tick_indices, df['time'].dt.strftime('%m-%d %H:%M').iloc[tick_indices].values, rotation=20)
         plt.xlabel("Timeline (Synchronized Market Open Minutes)", fontsize=10)
 
         plt.tight_layout()
-        plt.savefig(OUTPUT_CHART, dpi=300)
+        plt.savefig(OUTPUT_CHART_EXEC, dpi=300)
         plt.close()
-        print(f"✅ Gelaagd execution dashboard succesvol opgeslagen op: {OUTPUT_CHART}\n")
+        print(f"✅ Gelaagd execution dashboard succesvol opgeslagen op: {OUTPUT_CHART_EXEC}\n")
 
 if __name__ == "__main__":
     run_multi_backtest()
