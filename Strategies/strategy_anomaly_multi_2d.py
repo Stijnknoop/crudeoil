@@ -10,7 +10,7 @@ from tqdm import tqdm
 # 🎛️ CENTRAL CONFIGURATION PANEL (PURE LIVE MINUTE-BY-MINUTE SIMULATION)
 # =========================================================================
 DATA_LIMIT = 5000         # Aantal synchrone minuten om te analyseren
-AGGREGATION_MINUTES = 30  # Return window voor de onderlinge relatie
+AGGREGATION_MINUTES = 15  # Return window voor de onderlinge relatie
 WINDOW_SIZE = 240         # 4 uur rolling lookback voor de markt-relatie
 
 # Output mappen
@@ -68,7 +68,7 @@ def run_multi_anomaly_engine():
     for i in tqdm(range(WINDOW_SIZE, len(merged_df))):
         train_slice = matrix_features[i - WINDOW_SIZE : i]
         
-        active_model = IsolationForest(contamination=0.01, random_state=42, n_estimators=50, n_jobs=-1)
+        active_model = IsolationForest(contamination=0.005, random_state=42, n_estimators=50, n_jobs=-1)
         active_model.fit(train_slice)
         
         current_sample = matrix_features[i].reshape(1, -1)
