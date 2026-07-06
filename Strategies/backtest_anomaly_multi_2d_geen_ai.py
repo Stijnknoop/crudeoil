@@ -7,9 +7,9 @@ from datetime import datetime, time
 # =========================================================================
 # 🎛️ CENTRAL CONFIGURATION PANEL (PURE Z-SCORE STATISTICAL ARBITRAGE)
 # =========================================================================
-DATA_LIMIT = 5000         # Aantal synchrone minuten om te analyseren
-RATIO_LOOKBACK = 240       # 4 uur rolling window om het historisch gemiddelde te bepalen
-Z_THRESHOLD = 2.2          # De statistische drempel (elastiek-spanning) voor de instap
+DATA_LIMIT = 5000         
+RATIO_LOOKBACK = 240       
+Z_THRESHOLD = 2.2          # Pure modus presteert beter op een hogere drempel zoals 2.2!
 
 # Minimale wiskundig verwachte winst in % om de trade te accepteren
 MIN_EXPECTED_WIN_PCT = 0.10  
@@ -22,16 +22,15 @@ INPUT_CSV = os.path.join(RESULT_DIR, "multi_asset_2d_analyzed_data.csv")
 OUTPUT_REPORT = os.path.join(RESULT_DIR, "multi_backtest_report.md")
 
 # Output grafieken
-OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # De paarse ROI vermogensgrafiek
-OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell/Z-score dashboard
+OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       
+OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    
 
 def run_pure_zscore_backtest():
-    print(f"🚀 MANTRA Pure Z-Score Arbitrage Engine Gestart (Klassieke Modus)...")
+    print(f"🚀 MANTRA Pure Z-Score Arbitrage Engine Gestart... [AI-Filter: VOLLEDIG GEBLESSEERD / UIT]")
     if not os.path.exists(INPUT_CSV):
-        print(f"❌ Fout: {INPUT_CSV} ontbreekt. Zorg dat de basis asset-data aanwezig is!")
+        print(f"❌ Fout: {INPUT_CSV} ontbreekt. Run eerst de multi ML engine!")
         return
 
-    # Inladen en sorteren van de marktdata
     df = pd.read_csv(INPUT_CSV)
     df['time'] = pd.to_datetime(df['time'])
     df = df.sort_values('time').reset_index(drop=True)
@@ -39,7 +38,7 @@ def run_pure_zscore_backtest():
     if len(df) > DATA_LIMIT:
         df = df.tail(DATA_LIMIT).reset_index(drop=True)
 
-    # Pure Wiskundige Spread & Z-Score Berekening
+    # Wiskundige Spread & Ratio Berekening
     df['ratio'] = df['US500_price'] / df['GOLD_price']
     df['ratio_mean'] = df['ratio'].rolling(window=RATIO_LOOKBACK).mean()
     df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
@@ -57,7 +56,7 @@ def run_pure_zscore_backtest():
     equity_curve = [0.0]
     skipped_trades_count = 0  
 
-    # Real-time Marktsimulatie Loop
+    # Marktsimulatie Loop
     for i in range(len(df)):
         row = df.iloc[i]
         curr_time = row['time'].time()
@@ -65,7 +64,7 @@ def run_pure_zscore_backtest():
         z_curr = row['z_score']
 
         # ---------------------------------------------------------------------
-        # CASE A: ACTIEVE POSITIE (Wacht op herstel naar het gemiddelde Z=0)
+        # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Wacht op Convergence, Timeout of EOD)
         # ---------------------------------------------------------------------
         if position is not None:
             if position == 'US500_SHORT_GOLD_LONG':
@@ -75,10 +74,8 @@ def run_pure_zscore_backtest():
                 pct_us500 = ((row['US500_close_bid'] - entry_us500) / entry_us500) * 100
                 pct_gold = ((entry_gold - row['GOLD_close_ask']) / entry_gold) * 100
             
-            # Reëel gehalveerd rendement over het totale portfoliokapitaal
             float_pnl_combination = (pct_us500 + pct_gold) / 2
             
-            # Check op statistische convergentie (elastiek schiet terug naar het gemiddelde)
             converged = False
             if position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
                 converged = True
@@ -110,15 +107,13 @@ def run_pure_zscore_backtest():
                 continue
 
         # ---------------------------------------------------------------------
-        # CASE B: GEEN OPENDE POSITIE (Uitsluitend monitoren van de Z-Score)
+        # CASE B: GEEN OPENDE POSITIE (🔥 PURE MODE: Kijkt ALLEEN naar de Z-score!)
         # ---------------------------------------------------------------------
         else:
             if is_inside_hours and abs(z_curr) >= Z_THRESHOLD:
                 
-                # Berekening van de puur wiskundig verwachte winst tot aan het gemiddelde
                 expected_win_pct = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                 
-                # Toegangspoort filter
                 if expected_win_pct < MIN_EXPECTED_WIN_PCT:
                     skipped_trades_count += 1
                     continue
@@ -143,7 +138,7 @@ def run_pure_zscore_backtest():
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
         f.write("# 📊 MANTRA: Pure Z-Score Statistical Arbitrage Ledger\n\n")
-        f.write("* **Strategy Mode:** `PURE CLASSICAL Z-SCORE` (No ML Filter)\n")
+        f.write("* **Strategy Mode:** `PURE CLASSICAL Z-SCORE` (AI Anomalies Ignored)\n")
         if len(trades_df) > 0:
             winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
             f.write(f"* **Total Systemic Trades Executed:** {len(trades_df)}\n")
@@ -169,10 +164,6 @@ def run_pure_zscore_backtest():
             f.write(f"* **Trades Skipped by Expected-Win Filter:** {skipped_trades_count}\n")
 
     if len(trades_df) > 0:
-        # ---------------------------------------------------------------------
-        # 📊 GRAFIEK 1: CUMULATIEVE VERMOGENSKROMME
-        # ---------------------------------------------------------------------
-        print("📊 Genereren van de Cumulative ROI Curve...")
         plt.figure(figsize=(12, 6))
         plt.plot(range(len(equity_curve)), equity_curve, color='purple', linewidth=2, marker='o', label='Combined Pairs ROI (%)')
         plt.axhline(0, color='black', linestyle='--', alpha=0.5)
@@ -184,12 +175,7 @@ def run_pure_zscore_backtest():
         plt.savefig(OUTPUT_CHART_ROI, dpi=300)
         plt.close()
 
-        # ---------------------------------------------------------------------
-        # 📊 GRAFIEK 2: GEOPTIMALISEERD 3-LAGIG DASHBOARD
-        # ---------------------------------------------------------------------
-        print("📊 Genereren van het gelaagde 3-Plots Execution Dashboard...")
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
-        
         ax1.plot(df.index, df['US500_price'], color='#1f78b4', alpha=0.4, label='US500 Mid Price')
         ax2.plot(df.index, df['GOLD_price'], color='#ffd700', alpha=0.5, label='GOLD Mid Price')
         ax3.plot(df.index, df['z_score'], color='#6a3d9a', alpha=0.7, linewidth=1.5, label='Real-time Z-Score')
@@ -203,7 +189,6 @@ def run_pure_zscore_backtest():
         for t in trades_log:
             e_idx = t['entry_idx']
             x_idx = t['exit_idx']
-            
             ax1.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
             ax2.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
             ax3.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
@@ -212,16 +197,13 @@ def run_pure_zscore_backtest():
                 lbl = 'Buy Order (LONG)' if not legend_added["US_LONG"] else ""
                 ax1.scatter(e_idx, t['entry_us500'], color='green', marker='^', s=120, zorder=5, label=lbl)
                 legend_added["US_LONG"] = True
-                
                 lbl = 'Sell Order (SHORT)' if not legend_added["AU_SHORT"] else ""
                 ax2.scatter(e_idx, t['entry_gold'], color='red', marker='v', s=120, zorder=5, label=lbl)
                 legend_added["AU_SHORT"] = True
-                
             elif t['type'] == 'US500_SHORT_GOLD_LONG':
                 lbl = 'Sell Order (SHORT)' if not legend_added["US_SHORT"] else ""
                 ax1.scatter(e_idx, t['entry_us500'], color='red', marker='v', s=120, zorder=5, label=lbl)
                 legend_added["US_SHORT"] = True
-                
                 lbl = 'Buy Order (LONG)' if not legend_added["AU_LONG"] else ""
                 ax2.scatter(e_idx, t['entry_gold'], color='green', marker='^', s=120, zorder=5, label=lbl)
                 legend_added["AU_LONG"] = True
@@ -247,7 +229,7 @@ def run_pure_zscore_backtest():
         plt.tight_layout()
         plt.savefig(OUTPUT_CHART_EXEC, dpi=300)
         plt.close()
-        print(f"✅ Dashboard succesvol opgeslagen op: {OUTPUT_CHART_EXEC}\n")
+        print(f"✅ Pure Dashboard succesvol bijgewerkt op: {OUTPUT_CHART_EXEC}\n")
 
 if __name__ == "__main__":
     run_pure_zscore_backtest()
