@@ -12,11 +12,15 @@ OUTPUT_CHART = os.path.join(RESULT_DIR, "backtest_chart.png")
 
 VOLATILITY_WINDOW = 15  # Volatilitetsmeting van de afgelopen 15 minuten
 
-# CRUCIAAL: Verlaagd van 2.0 naar 0.8 voor veel krappere SL/TP brackets
-VOL_MULTIPLIER = 0.8    
+# Asymmetrische risico-multipliers
+SL_MULTIPLIER = 1.5    # Ruime Stop Loss
+TP_MULTIPLIER = 0.5    # Krappe Take Profit
+
+# NIEUW: Maximale doorlooptijd van een trade in minuten (bars)
+MAX_DURATION = 30      
 
 def run_backtest():
-    print(f"🚀 MANTRA Backtest Engine: Risico-afstelling ingesteld op {VOL_MULTIPLIER}x Volatilisatie...")
+    print(f"🚀 MANTRA Backtest Engine: Risico-afstelling activeert Time-Stop na {MAX_DURATION} minuten...")
     
     if not os.path.exists(INPUT_CSV):
         print(f"❌ Fout: Analysebestand {INPUT_CSV} niet gevonden.")
@@ -52,9 +56,10 @@ def run_backtest():
         is_inside_trading_hours = start_trade_zone <= curr_time <= end_trade_zone
 
         # ---------------------------------------------------------------------
-        # CASE A: ER IS EEN ACTIEVE POSITIE (Check SL, TP of Einde Handelsdag)
+        # CASE A: ER IS EEN ACTIEVE POSITIE (Check SL, TP, Timeout of EOD)
         # ---------------------------------------------------------------------
         if position is not None:
+            # 1. Tijdrestrictie: Handelsdag voorbij (> 22:00) -> Geforceerd uitstappen
             if curr_time > end_trade_zone:
                 if position == 'LONG':
                     pnl = row['close_bid'] - entry_price
@@ -73,7 +78,26 @@ def run_backtest():
                 position = None
                 continue
 
-            # Check SL/TP voor LONG positie
+            # 2. NIEUW: Max Duration Timeout Check (Trade duurt te lang)
+            if (i - entry_idx) >= MAX_DURATION:
+                if position == 'LONG':
+                    pnl = row['close_bid'] - entry_price
+                    exit_price = row['close_bid']
+                elif position == 'SHORT':
+                    pnl = entry_price - row['close_ask']
+                    exit_price = row['close_ask']
+                
+                trades_log.append({
+                    'type': position, 'entry_time': entry_time, 'exit_time': curr_datetime,
+                    'entry_idx': entry_idx, 'exit_idx': i,
+                    'entry_price': entry_price, 'exit_price': exit_price, 
+                    'sl_price': sl_price, 'tp_price': tp_price, 'pnl': pnl, 'reason': "MAX_DURATION_TIMEOUT"
+                })
+                equity_curve.append(equity_curve[-1] + pnl)
+                position = None
+                continue
+
+            # 3. Check SL/TP voor LONG positie
             if position == 'LONG':
                 if row['low_bid'] <= sl_price:
                     pnl = sl_price - entry_price
@@ -96,7 +120,7 @@ def run_backtest():
                     equity_curve.append(equity_curve[-1] + pnl)
                     position = None
 
-            # Check SL/TP voor SHORT positie
+            # 4. Check SL/TP voor SHORT positie
             elif position == 'SHORT':
                 if row['high_ask'] >= sl_price:
                     pnl = entry_price - sl_price
@@ -133,16 +157,16 @@ def run_backtest():
                     entry_price = row['close_ask']
                     entry_time = curr_datetime
                     entry_idx = i
-                    sl_price = entry_price - (VOL_MULTIPLIER * vol)
-                    tp_price = entry_price + (VOL_MULTIPLIER * vol)
+                    sl_price = entry_price - (SL_MULTIPLIER * vol)
+                    tp_price = entry_price + (TP_MULTIPLIER * vol)
                     
                 elif row['anomaly_type'] == 'UP_SHOCK':
                     position = 'SHORT'
                     entry_price = row['close_bid']
                     entry_time = curr_datetime
                     entry_idx = i
-                    sl_price = entry_price + (VOL_MULTIPLIER * vol)
-                    tp_price = entry_price - (VOL_MULTIPLIER * vol)
+                    sl_price = entry_price + (SL_MULTIPLIER * vol)
+                    tp_price = entry_price - (TP_MULTIPLIER * vol)
 
     # 2️⃣ GENEREREN VAN PERFORMANCE RAPPORT (.MD)
     trades_df = pd.DataFrame(trades_log)
@@ -173,9 +197,9 @@ def run_backtest():
                     f"{r['exit_price']:.2f} | {r['pnl']:.2f} | `{r['reason']}` |\n")
 
     # ---------------------------------------------------------------------
-    # 📊 3️⃣ HIGH-FIDELITY EXECUTION CHART GENEREREN (KRAPPE BRACKETS)
+    # 📊 3️⃣ HIGH-FIDELITY EXECUTION CHART GENEREREN
     # ---------------------------------------------------------------------
-    print("📊 Genereren van Tight Execution Chart...")
+    print("📊 Genereren van Asymmetric Execution Chart met Time-Stops...")
     plt.figure(figsize=(15, 8))
     
     plt.plot(df.index, df['close_mid'], color='#1f78b4', alpha=0.5, label='US500 Mid Price Baseline', linewidth=1.2)
@@ -191,12 +215,12 @@ def run_backtest():
         sl_series = np.full(len(trade_x_range), t['sl_price'])
         
         # Take Profit Lijn
-        lbl_tp = 'Take Profit Target' if not legend_labels_added["TP_LINE"] else ""
+        lbl_tp = 'Take Profit Target (Tight)' if not legend_labels_added["TP_LINE"] else ""
         plt.plot(trade_x_range, tp_series, color='#ffd700', linestyle='-.', linewidth=1.8, label=lbl_tp)
         legend_labels_added["TP_LINE"] = True
         
         # Stop Loss Lijn
-        lbl_sl = 'Stop Loss Target' if not legend_labels_added["SL_LINE"] else ""
+        lbl_sl = 'Stop Loss Target (Wide)' if not legend_labels_added["SL_LINE"] else ""
         plt.plot(trade_x_range, sl_series, color='#ff4500', linestyle='--', linewidth=1.5, label=lbl_sl)
         legend_labels_added["SL_LINE"] = True
         
@@ -216,7 +240,7 @@ def run_backtest():
     tick_labels = df['time'].dt.strftime('%m-%d %H:%M').iloc[tick_indices].values
     plt.xticks(tick_indices, tick_labels, rotation=25)
     
-    plt.title("MANTRA Strategy Execution Node: US500 Tight Bracket Orders (SL/TP Real-Time Mapping)", fontsize=12, fontweight='bold', loc='left')
+    plt.title("MANTRA Strategy Execution Node: US500 Asymmetric Bracket Orders (With 30m Time-Stop)", fontsize=12, fontweight='bold', loc='left')
     plt.xlabel("Timeline (Market Open Minutes)", fontsize=10)
     plt.ylabel("Index Price ($)", fontsize=10)
     plt.grid(True, linestyle=':', alpha=0.4)
@@ -225,7 +249,7 @@ def run_backtest():
     plt.tight_layout()
     plt.savefig(OUTPUT_CHART, dpi=300)
     plt.close()
-    print(f"✅ Krappere execution-grafiek succesvol opgeslagen op: {OUTPUT_CHART}\n")
+    print(f"✅ Execution-grafiek met Time-Stops succesvol opgeslagen op: {OUTPUT_CHART}\n")
 
 if __name__ == "__main__":
     run_backtest()
