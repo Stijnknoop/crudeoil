@@ -90,7 +90,7 @@ def run_multi_backtest():
                     exit_us500 = row['US500_close_bid']
                     exit_gold = row['GOLD_close_ask']
                 
-                # GECORRIGEERD: Delen door 2 voor het reële rendement over de totale portfolio-inleg
+                # Portfolio-ROI: Gemiddelde van beide legs (dollar-neutral)
                 total_pnl_pct = (pct_us500 + pct_gold) / 2
                 
                 trades_log.append({
@@ -125,7 +125,7 @@ def run_multi_backtest():
                     entry_idx = i
 
     # ---------------------------------------------------------------------
-    # 📝 GECORRIGEERD: LEDGER RAPPORTAGE MET PORTFOLIO ROI METRICS (.MD)
+    # 📝 HERINGERIGTE LEDGER RAPPORTAGE (TIJD BIJ ELKAAR & ASSET BLOKKEN)
     # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
@@ -138,18 +138,18 @@ def run_multi_backtest():
             f.write(f"* **Average Return per Trade Combination:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
             
             f.write("### 📜 Geavanceerd Transactie Ledger (Leg Decomposition)\n")
-            # Kolomnaam hernoemd naar PnL Trade Combination
-            f.write("| # | Entry Time | US500 Pos | Gold Pos | Entry US500 | Exit US500 | PnL US500 | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Reason |\n")
-            f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+            # NIEUWE VOLGORDE: Tijdstempels -> Blok US500 -> Blok Goud -> Totaal & Reden
+            f.write("| # | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Reason |\n")
+            f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
             
             for idx, r in trades_df.iterrows():
                 us500_pos = "SHORT" if "US500_SHORT" in r['type'] else "LONG"
                 gold_pos = "LONG" if "GOLD_LONG" in r['type'] else "SHORT"
                 
-                f.write(f"| {idx+1} | {r['entry_time'].strftime('%m-%d %H:%M')} | "
-                        f"`{us500_pos}` | `{gold_pos}` | "
-                        f"{r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
-                        f"{r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
+                # Schrijf data weg in de loepzuivere, nieuwe logische volgorde
+                f.write(f"| {idx+1} | {r['entry_time'].strftime('%m-%d %H:%M')} | {r['exit_time'].strftime('%m-%d %H:%M')} | "
+                        f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
+                        f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
                         f"**{r['pnl_pct']:.4f}%** | `{r['reason']}` |\n")
         else:
             f.write("Geen cross-asset arbitrages geactiveerd binnen de huidige parameters.")
