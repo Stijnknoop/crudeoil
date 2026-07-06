@@ -10,7 +10,10 @@ from datetime import datetime, time
 DATA_LIMIT = 5000         # Match met je ML engine
 RATIO_LOOKBACK = 240       # 4 uur rolling window om de 'normale' verhouding te bepalen
 Z_THRESHOLD = 2.2          # Alleen instappen bij extreme elastiek-spanning
-TP_VOL_MULTIPLIER = 0.5    # Multiplier op de rolling ratio volatiliteit voor het winstdoel
+
+# 🔥 NIEUW: Minimale verwachte winst in % op de totale combinatie om de trade überhaupt te accepteren
+MIN_EXPECTED_WIN_PCT = 0.10  # Instelbaar (bvb. 0.10% netto portfolio opbrengst)
+
 MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
 
 # Mappenstructuur
@@ -23,7 +26,7 @@ OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # 
 OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell dashboard
 
 def run_multi_backtest():
-    print(f"🚀 MANTRA Arbitrage Portfolio Engine (Dynamic TP) Gestart...")
+    print(f"🚀 MANTRA Arbitrage Filter Engine Gestart...")
     if not os.path.exists(INPUT_CSV):
         print(f"❌ Fout: {INPUT_CSV} ontbreekt. Run eerst de multi ML engine!")
         return
@@ -49,10 +52,10 @@ def run_multi_backtest():
     entry_time = None
     entry_us500 = 0.0
     entry_gold = 0.0
-    active_tp = 0.0  
 
     trades_log = []
     equity_curve = [0.0]
+    skipped_trades_count = 0  # Teller voor geweigerde trades wegens te lage verwachte winst
 
     # Marktsimulatie Loop
     for i in range(len(df)):
@@ -62,9 +65,10 @@ def run_multi_backtest():
         z_curr = row['z_score']
 
         # ---------------------------------------------------------------------
-        # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Check Dynamic TP, Convergence, Timeout)
+        # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Check Pure Convergence, Timeout of EOD)
         # ---------------------------------------------------------------------
         if position is not None:
+            # Bereken realtime procentuele PnL op de sluiting van deze minuut
             if position == 'US500_SHORT_GOLD_LONG':
                 pct_us500 = ((entry_us500 - row['US500_close_ask']) / entry_us500) * 100
                 pct_gold = ((row['GOLD_close_bid'] - entry_gold) / entry_gold) * 100
@@ -72,34 +76,25 @@ def run_multi_backtest():
                 pct_us500 = ((row['US500_close_bid'] - entry_us500) / entry_us500) * 100
                 pct_gold = ((entry_gold - row['GOLD_close_ask']) / entry_gold) * 100
             
-            # Portfolio-ROI: Gemiddelde van beide legs (dollar-neutral)
+            # Reëel rendement over de totale portfolio-inleg (gemiddelde van de legs)
             float_pnl_combination = (pct_us500 + pct_gold) / 2
             
-            trigger_exit = False
-            reason = ""
-
-            # 1. Check of de Vaste/Dynamische Volatility Take Profit (%) is bereikt
-            if float_pnl_combination >= active_tp:
-                trigger_exit = True
-                reason = "DYNAMIC_TAKE_PROFIT"
-            
-            # 2. Check op Statistisch Herstel naar het gemiddelde (Z-score Convergence)
-            elif position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
-                trigger_exit = True
+            # REVERTED: We stappen uitsluitend uit op pure statistische convergentie (Z=0)
+            converged = False
+            if position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
+                converged = True
                 reason = "MEAN_REVERSION_CONVERGENCE"
             elif position == 'US500_LONG_GOLD_SHORT' and z_curr >= 0:
-                trigger_exit = True
+                converged = True
                 reason = "MEAN_REVERSION_CONVERGENCE"
             
-            # 3. Check op Timeouts & Marktsluiting
-            elif (i - entry_idx) >= MAX_DURATION:
-                trigger_exit = True
-                reason = "MAX_DURATION_TIMEOUT"
-            elif curr_time > time(22, 0):
-                trigger_exit = True
-                reason = "FORCED_EOD_CLOSE"
+            timeout = (i - entry_idx) >= MAX_DURATION
+            forced_eod = curr_time > time(22, 0)
 
-            if trigger_exit:
+            if converged or timeout or forced_eod:
+                if not converged:
+                    reason = "FORCED_EOD_CLOSE" if forced_eod else "MAX_DURATION_TIMEOUT"
+                
                 exit_us500 = row['US500_close_ask'] if position == 'US500_SHORT_GOLD_LONG' else row['US500_close_bid']
                 exit_gold = row['GOLD_close_bid'] if position == 'US500_SHORT_GOLD_LONG' else row['GOLD_close_ask']
                 
@@ -109,29 +104,27 @@ def run_multi_backtest():
                     'entry_us500': entry_us500, 'exit_us500': exit_us500,
                     'entry_gold': entry_gold, 'exit_gold': exit_gold,
                     'pct_us500': pct_us500, 'pct_gold': pct_gold,
-                    'pnl_combination': float_pnl_combination, 'target_tp': active_tp, 'reason': reason
+                    'pnl_pct': float_pnl_combination, 'reason': reason
                 })
                 equity_curve.append(equity_curve[-1] + float_pnl_combination)
                 position = None
                 continue
 
         # ---------------------------------------------------------------------
-        # CASE B: GEEN OPENDE POSITIE (Wacht op ML Anomaly + Extreme Z-Score)
+        # CASE B: GEEN OPENDE POSITIE (Wacht op ML Anomaly + Extreme Z-Score + Filter)
         # ---------------------------------------------------------------------
         else:
             if is_inside_hours and row['is_system_anomaly'] == 1:
                 if abs(z_curr) >= Z_THRESHOLD:
                     
-                    # Berekening van de gekoppelde transactie-vloer (Spread Filter)
-                    spread_us500_pct = ((row['US500_close_ask'] - row['US500_close_bid']) / row['US500_price']) * 100
-                    spread_gold_pct = ((row['GOLD_close_ask'] - row['GOLD_close_bid']) / row['GOLD_price']) * 100
-                    total_spread_friction = (spread_us500_pct + spread_gold_pct) / 2
+                    # 🔍 RECHTSTREEKSE BEREKENING VAN DE VERWACHTE PORTFOLIO-WINST BIJ CONVERGENTIE
+                    # Afstand van de huidige ratio tot het gemiddelde gedeeld door 2 (vanwege totale portfolio inleg)
+                    expected_win_pct = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     
-                    # Dynamisch winstdoel op basis van de huidige marktbeweeglijkheid
-                    raw_dynamic_tp = (row['ratio_std'] / row['ratio_mean']) * 100 * TP_VOL_MULTIPLIER
-                    
-                    # Hard Floor: Moet altijd groter zijn dan 1.5x de broker frictiekosten
-                    active_tp = max(raw_dynamic_tp, total_spread_friction * 1.5)
+                    # 🔥 DE TOEGANGSPOORT: Weiger de trade als het sop de kool niet waard is
+                    if expected_win_pct < MIN_EXPECTED_WIN_PCT:
+                        skipped_trades_count += 1
+                        continue
                     
                     if z_curr >= Z_THRESHOLD:
                         position = 'US500_SHORT_GOLD_LONG'
@@ -148,33 +141,34 @@ def run_multi_backtest():
                         entry_idx = i
 
     # ---------------------------------------------------------------------
-    # 📝 LOEPZUIVERE LEDGER RAPPORTAGE (ZONDER BACKSLASH SYNTAX ERRORS)
+    # 📝 LEDGER RAPPORTAGE MET GEWEIGERDE TRADES STATISTIEKEN (.MD)
     # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
         f.write("# 📊 MANTRA: Cross-Asset Statistical Arbitrage Ledger\n\n")
         if len(trades_df) > 0:
-            winning_trades = len(trades_df[trades_df['pnl_combination'] > 0])
+            winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
             f.write(f"* **Total Systemic Trades Executed:** {len(trades_df)}\n")
+            f.write(f"* **Trades Skipped by Expected-Win Filter:** {skipped_trades_count}\n")
             f.write(f"* **Arbitrage Win Rate:** {(winning_trades / len(trades_df)) * 100:.2f}%\n")
-            f.write(f"* **Net Combined Strategy Yield (Total Capital ROI):** {trades_df['pnl_combination'].sum():.4f}%\n")
-            f.write(f"* **Average Return per Trade Combination:** {trades_df['pnl_combination'].mean():.4f}%\n\n")
+            f.write(f"* **Net Combined Strategy Yield (Total Capital ROI):** {trades_df['pnl_pct'].sum():.4f}%\n")
+            f.write(f"* **Average Return per Trade Combination:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
             
             f.write("### 📜 Geavanceerd Transactie Ledger (Leg Decomposition)\n")
-            f.write("| # | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | Assigned Target TP | PnL Trade Combination | Reason |\n")
-            f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+            f.write("| # | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Reason |\n")
+            f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
             
             for idx, r in trades_df.iterrows():
                 us500_pos = "SHORT" if "US500_SHORT" in r['type'] else "LONG"
                 gold_pos = "LONG" if "GOLD_LONG" in r['type'] else "SHORT"
                 
-                # Foutloos opgebouwde Markdown-string zonder geneste quotes of backslashes
                 f.write(f"| {idx+1} | {r['entry_time'].strftime('%m-%d %H:%M')} | {r['exit_time'].strftime('%m-%d %H:%M')} | "
                         f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
                         f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
-                        f"{r['target_tp']:.4f}% | **{r['pnl_combination']:.4f}%** | `{r['reason']}` |\n")
+                        f"**{r['pnl_pct']:.4f}%** | `{r['reason']}` |\n")
         else:
-            f.write("Geen cross-asset arbitrages geactiveerd binnen de huidige parameters.")
+            f.write("Geen cross-asset arbitrages geactiveerd binnen de huidige parameters.\n\n")
+            f.write(f"* **Trades Skipped by Expected-Win Filter:** {skipped_trades_count}\n")
 
     if len(trades_df) > 0:
         # ---------------------------------------------------------------------
