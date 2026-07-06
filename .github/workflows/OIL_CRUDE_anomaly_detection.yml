@@ -1,0 +1,54 @@
+name: OIL_CRUDE Anomaly Detection
+
+permissions:
+  contents: write
+
+on:
+  workflow_run:
+    workflows: ["Update Market Data ALL_EPICS"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  analyze-oil:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # Installeer dependencies
+      - name: Install dependencies
+        run: |
+          pip install pandas scikit-learn matplotlib
+
+      # Stap 1: ML Engine voor Olie uitvoeren
+      - name: Run OIL_CRUDE Anomaly Detection ML Engine
+        run: python Strategies/strategy_anomaly_oil.py
+
+      # Stap 2: Backtest Engine voor Olie verwerken
+      - name: Run Quantitative Strategy Backtest Engine (Oil)
+        run: python Strategies/backtest_anomaly_oil.py
+
+      # Stap 3: Pushen van resultaten naar de repository
+      - name: Push Oil Analysis and Backtest Artifacts
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          
+          # Voeg specifiek de resultatenmap voor olie toe
+          git add Strategies/results/strategy_anomaly_oil/
+          
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "Update OIL_CRUDE machine learning matrix and quantitative backtests"
+            git pull --rebase origin master
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          else
+            echo "Geen wijzigingen gedetecteerd in de olie-resultaten."
+          fi
