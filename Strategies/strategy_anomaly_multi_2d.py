@@ -9,9 +9,9 @@ from tqdm import tqdm
 # =========================================================================
 # 🎛️ CENTRAL CONFIGURATION PANEL (PURE LIVE MINUTE-BY-MINUTE SIMULATION)
 # =========================================================================
-DATA_LIMIT = 4000         # Aantal synchrone minuten om te analyseren (bvb. 5000)
-AGGREGATION_MINUTES = 30  # Return window voor de onderlinge relatie
-WINDOW_SIZE = 600        # 4 uur rolling lookback voor de markt-relatie
+DATA_LIMIT = 5000         # Aantal synchrone minuten om te analyseren
+AGGREGATION_MINUTES = 15  # Return window voor de onderlinge relatie
+WINDOW_SIZE = 240         # 4 uur rolling lookback voor de markt-relatie
 
 # Output mappen
 OUTPUT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
@@ -32,7 +32,14 @@ def load_and_prepare_asset(folder_name):
     df['mid'] = (df['close_bid'] + df['close_ask']) / 2
     df[f'{folder_name}_return'] = df['mid'].pct_change(periods=AGGREGATION_MINUTES)
     
-    return df[['time', 'mid', f'{folder_name}_return']].rename(columns={'mid': f'{folder_name}_price'})
+    # GECORRIGEERD: We nemen close_bid en close_ask nu expliciet mee én hernoemen ze uniek per asset
+    return df[['time', 'mid', 'close_bid', 'close_ask', f'{folder_name}_return']].rename(
+        columns={
+            'mid': f'{folder_name}_price',
+            'close_bid': f'{folder_name}_close_bid',
+            'close_ask': f'{folder_name}_close_ask'
+        }
+    )
 
 def run_multi_anomaly_engine():
     print("⚡ MANTRA Safe-Haven 2D Engine Opstarten (US500 vs GOLD) ⚡")
@@ -64,16 +71,12 @@ def run_multi_anomaly_engine():
     
     print(f"🧠 Starten van de intensieve minuteloop...")
     
-    # De loop traint nu onvoorwaardelijk een nieuw model per stap
     for i in tqdm(range(WINDOW_SIZE, len(merged_df))):
-        # Pak de exacte historische slice van de afgelopen 4 uur
         train_slice = matrix_features[i - WINDOW_SIZE : i]
         
-        # Initialiseer en fit het model direct op deze minuut-specifieke dataset
-        active_model = IsolationForest(contamination=0.05, random_state=42, n_estimators=50, n_jobs=-1)
+        active_model = IsolationForest(contamination=0.01, random_state=42, n_estimators=50, n_jobs=-1)
         active_model.fit(train_slice)
         
-        # Voorspel de huidige minuut direct out-of-sample
         current_sample = matrix_features[i].reshape(1, -1)
         rolling_scores[i] = active_model.decision_function(current_sample)[0]
         system_anomalies[i] = 1 if active_model.predict(current_sample)[0] == -1 else 0
