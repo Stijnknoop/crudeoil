@@ -1,7 +1,11 @@
 name: MANTRA Autonomous Dispatch Engine
 
 on:
-  workflow_dispatch: # 🔥 Puur en alleen handmatig opstarten via de GitHub website
+  workflow_dispatch: # Puur en alleen handmatig opstarten via de GitHub website
+
+# 🔥 NIEUW: Dit geeft de GitHub token expliciet toestemming om wijzigingen terug in de repo te pushen
+permissions:
+  contents: write
 
 jobs:
   run-statistical-arbitrage:
@@ -14,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # 'cache: pip' is weggehaald om fouten te voorkomen
+          python-version: '3.11'
 
       - name: Install Core Mathematics Dependencies
         run: |
