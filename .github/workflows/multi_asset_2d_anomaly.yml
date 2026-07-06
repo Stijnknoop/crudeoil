@@ -5,10 +5,10 @@ permissions:
 
 on:
   # Triggert automatisch zodra de algemene data-ingestie succesvol is afgerond
-  #workflow_run:
-  #  workflows: ["Update Market Data ALL_EPICS"]
-  #  types:
-  #    - completed
+#  workflow_run:
+#    workflows: ["Update Market Data ALL_EPICS"]
+#    types:
+#      - completed
   # Maakt handmatige uitvoering mogelijk via de GitHub Actions interface
   workflow_dispatch:
 
@@ -25,26 +25,30 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Installeer de libraries die nodig zijn voor ML en visualisatie
+      # Installeer de libraries die nodig zijn voor ML, visualisatie, de voortgangsbalk én de backtest
       - name: Install dependencies
         run: |
           pip install pandas scikit-learn matplotlib tqdm
 
-      # Uitvoeren van de pure 2D Safe-Haven cross correlation engine
+      # Stap 1: Uitvoeren van de pure 2D Safe-Haven cross correlation engine (elke minuut her-trainen)
       - name: Run Multi-Asset Safe Haven ML Engine
         run: python Strategies/strategy_anomaly_multi_2d.py
 
-      # Sla de gegenereerde dashboards en CSV databestanden automatisch op in de repo
+      # Stap 2: NIEUW - Uitvoeren van de Cross-Asset Pairs Trading Arbitrage Backtester
+      - name: Run Cross-Asset Arbitrage Backtest Engine
+        run: python Strategies/backtest_anomaly_multi_2d.py
+
+      # Stap 3: Sla alle gegenereerde bestanden (ML CSV + Backtest MD rapport + charts) automatisch op in de repo
       - name: Push Multi-Asset Dashboards and Artifacts
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           
-          # Voeg specifiek de resultatenmap voor de 2D multi-analyse toe
+          # Voeg de volledige resultatenmap toe (bevat nu alle statistieken en visualisaties)
           git add Strategies/results/strategy_anomaly_multi_2d/
           
           if ! git diff-index --quiet HEAD; then
-            git commit -m "Update MANTRA multi-asset 2d telemetry and dashboard charts"
+            git commit -m "Update MANTRA multi-asset 2d telemetry, statistical arbitrage backtests, and charts"
             git pull --rebase origin master
             git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           else
