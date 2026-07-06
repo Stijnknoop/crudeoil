@@ -11,7 +11,7 @@ DATA_LIMIT = 5000         # Match met je ML engine
 RATIO_LOOKBACK = 240       # 4 uur rolling window om de 'normale' verhouding te bepalen
 Z_THRESHOLD = 1.5          # Alleen instappen bij extreme elastiek-spanning
 
-# 🔥 NIEUW: Minimale verwachte winst in % op de totale combinatie om de trade überhaupt te accepteren
+# Minimale verwachte winst in % op de totale combinatie om de trade überhaupt te accepteren
 MIN_EXPECTED_WIN_PCT = 0.20  # Instelbaar (bvb. 0.10% netto portfolio opbrengst)
 
 MAX_DURATION = 60         # Parachute: Harde maximale duration timeout in minuten
@@ -23,7 +23,7 @@ OUTPUT_REPORT = os.path.join(RESULT_DIR, "multi_backtest_report.md")
 
 # Twee aparte PNG-bestanden om beide grafieken te behouden
 OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # De paarse ROI vermogensgrafiek
-OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell dashboard
+OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell/Z-score dashboard
 
 def run_multi_backtest():
     print(f"🚀 MANTRA Arbitrage Filter Engine Gestart...")
@@ -55,7 +55,7 @@ def run_multi_backtest():
 
     trades_log = []
     equity_curve = [0.0]
-    skipped_trades_count = 0  # Teller voor geweigerde trades wegens te lage verwachte winst
+    skipped_trades_count = 0  
 
     # Marktsimulatie Loop
     for i in range(len(df)):
@@ -68,7 +68,6 @@ def run_multi_backtest():
         # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Check Pure Convergence, Timeout of EOD)
         # ---------------------------------------------------------------------
         if position is not None:
-            # Bereken realtime procentuele PnL op de sluiting van deze minuut
             if position == 'US500_SHORT_GOLD_LONG':
                 pct_us500 = ((entry_us500 - row['US500_close_ask']) / entry_us500) * 100
                 pct_gold = ((row['GOLD_close_bid'] - entry_gold) / entry_gold) * 100
@@ -76,10 +75,8 @@ def run_multi_backtest():
                 pct_us500 = ((row['US500_close_bid'] - entry_us500) / entry_us500) * 100
                 pct_gold = ((entry_gold - row['GOLD_close_ask']) / entry_gold) * 100
             
-            # Reëel rendement over de totale portfolio-inleg (gemiddelde van de legs)
             float_pnl_combination = (pct_us500 + pct_gold) / 2
             
-            # REVERTED: We stappen uitsluitend uit op pure statistische convergentie (Z=0)
             converged = False
             if position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
                 converged = True
@@ -117,11 +114,8 @@ def run_multi_backtest():
             if is_inside_hours and row['is_system_anomaly'] == 1:
                 if abs(z_curr) >= Z_THRESHOLD:
                     
-                    # 🔍 RECHTSTREEKSE BEREKENING VAN DE VERWACHTE PORTFOLIO-WINST BIJ CONVERGENTIE
-                    # Afstand van de huidige ratio tot het gemiddelde gedeeld door 2 (vanwege totale portfolio inleg)
                     expected_win_pct = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     
-                    # 🔥 DE TOEGANGSPOORT: Weiger de trade als het sop de kool niet waard is
                     if expected_win_pct < MIN_EXPECTED_WIN_PCT:
                         skipped_trades_count += 1
                         continue
@@ -141,7 +135,7 @@ def run_multi_backtest():
                         entry_idx = i
 
     # ---------------------------------------------------------------------
-    # 📝 LEDGER RAPPORTAGE MET GEWEIGERDE TRADES STATISTIEKEN (.MD)
+    # 📝 LEDGER RAPPORTAGE GENEREREN (.MD)
     # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
@@ -182,28 +176,37 @@ def run_multi_backtest():
         plt.xlabel("Sequence of Closed Pairs Trades")
         plt.ylabel("Net Combined Return (%)")
         plt.grid(True, linestyle=':', alpha=0.5)
-        plt.legend(loc="upper left")
         plt.tight_layout()
         plt.savefig(OUTPUT_CHART_ROI, dpi=300)
         plt.close()
 
         # ---------------------------------------------------------------------
-        # 📊 GRAFIEK 2: DUAL-ASSET EXECUTION DASHBOARD
+        # 📊 GRAFIEK 2: GEOPTIMALISEERD 3-LAGIG EXECUTION DASHBOARD (INCLUSIEF Z-SCORE)
         # ---------------------------------------------------------------------
-        print("📊 Genereren van het gelaagde Execution Dashboard...")
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True)
+        print("📊 Genereren van het gelaagde 3-Plots Execution Dashboard...")
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
         
+        # Plot de 3 lijnen (US500, GOLD en de wiskundige Z-score)
         ax1.plot(df.index, df['US500_price'], color='#1f78b4', alpha=0.4, label='US500 Mid Price')
         ax2.plot(df.index, df['GOLD_price'], color='#ffd700', alpha=0.5, label='GOLD Mid Price')
+        ax3.plot(df.index, df['z_score'], color='#6a3d9a', alpha=0.7, linewidth=1.5, label='Real-time Z-Score')
+        
+        # Teken de kritieke drempels op de Z-score grafiek (Nullijn + Banden)
+        ax3.axhline(0, color='black', linestyle='-', alpha=0.4)
+        ax3.axhline(Z_THRESHOLD, color='red', linestyle='--', alpha=0.6, label=f'Trigger Bound (+/-{Z_THRESHOLD})')
+        ax3.axhline(-Z_THRESHOLD, color='red', linestyle='--', alpha=0.6)
         
         legend_added = {"US_LONG": False, "US_SHORT": False, "AU_LONG": False, "AU_SHORT": False}
 
+        # Loop door de uitgevoerde trades voor shading en markeringen over alle 3 de assen
         for t in trades_log:
             e_idx = t['entry_idx']
             x_idx = t['exit_idx']
             
+            # Trek de paarse schaduw door over alle drie de grafieken
             ax1.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
             ax2.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
+            ax3.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
             
             if t['type'] == 'US500_LONG_GOLD_SHORT':
                 lbl = 'Buy Order (LONG)' if not legend_added["US_LONG"] else ""
@@ -223,15 +226,23 @@ def run_multi_backtest():
                 ax2.scatter(e_idx, t['entry_gold'], color='green', marker='^', s=120, zorder=5, label=lbl)
                 legend_added["AU_LONG"] = True
 
+        # As 1 opmaak (S&P 500)
         ax1.set_ylabel("US500 Index Price ($)", fontsize=10)
         ax1.grid(True, linestyle=':', alpha=0.4)
         ax1.legend(loc="upper left", frameon=True, shadow=True)
         ax1.set_title("MANTRA Arbitrage Node: Real-time Pairs Trading Execution Dashboard", fontsize=12, fontweight='bold', loc='left')
 
+        # As 2 opmaak (Goud)
         ax2.set_ylabel("Gold Price ($)", fontsize=10)
         ax2.grid(True, linestyle=':', alpha=0.4)
         ax2.legend(loc="upper left", frameon=True, shadow=True)
+
+        # As 3 opmaak (Z-Score)
+        ax3.set_ylabel("Statistical Z-Score", fontsize=10)
+        ax3.grid(True, linestyle=':', alpha=0.4)
+        ax3.legend(loc="upper left", frameon=True, shadow=True)
         
+        # Synchroniseer de tijdsas-ticks op de onderste plot (ax3)
         num_ticks = 8
         tick_indices = np.linspace(0, len(df) - 1, num_ticks, dtype=int)
         plt.xticks(tick_indices, df['time'].dt.strftime('%m-%d %H:%M').iloc[tick_indices].values, rotation=20)
@@ -240,7 +251,7 @@ def run_multi_backtest():
         plt.tight_layout()
         plt.savefig(OUTPUT_CHART_EXEC, dpi=300)
         plt.close()
-        print(f"✅ Dashboard succesvol bijgewerkt op: {OUTPUT_CHART_EXEC}\n")
+        print(f"✅ 3-Plots Dashboard succesvol bijgewerkt op: {OUTPUT_CHART_EXEC}\n")
 
 if __name__ == "__main__":
     run_multi_backtest()
