@@ -9,12 +9,12 @@ from datetime import datetime, time
 # =========================================================================
 DATA_LIMIT = 5000         # Aantal synchrone minuten om te analyseren
 RATIO_LOOKBACK = 240       # 4 uur rolling window om het historisch gemiddelde te bepalen
-Z_THRESHOLD = 2.2          # De statistische drempel (elastiek-spanning) voor de instap
+Z_THRESHOLD = 3          # De statistische drempel (elastiek-spanning) voor de instap
 
 # Minimale wiskundig verwachte winst in % om de trade te accepteren
-MIN_EXPECTED_WIN_PCT = 0.10  
+MIN_EXPECTED_WIN_PCT = 0.20  
 
-MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
+MAX_DURATION = 60         # Parachute: Harde maximale duration timeout in minuten
 
 # Mappenstructuur
 RESULT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
