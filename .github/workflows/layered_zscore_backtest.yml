@@ -1,0 +1,53 @@
+name: MANTRA Autonomous Layered Z-Score Engine
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Hiermee kun je de backtest ook handmatig starten via de GitHub website
+
+jobs:
+  run-statistical-arbitrage:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Stap 1: Trek de allernieuwste code en asset-mappen (US500/GOLD) binnen
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      # Stap 2: Richt een schone Python omgeving in
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip' # Versnelt toekomstige runs
+
+      # Stap 3: Installeer uitsluitend de noodzakelijke wiskundige pakketten
+      - name: Install Core Mathematics Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy matplotlib
+
+      # Stap 4: Slinger de gelaagde, autonome grid-engine aan
+      - name: Execute Layered Grid Backtest
+        run: python Strategies/backtest_autonomous_layered_zscore.py
+
+      # Stap 5: Veiligstellen en pushen van de gegenereerde dagsessies naar je repo
+      - name: Commit and Push Daily Analysis Session Reports
+        run: |
+          git config --global user.name "MANTRA Algorithmic Automation"
+          git config --global user.email "actions@github.com"
+          
+          # Voeg alleen de nieuw gegenereerde dagmappen en bijbehorende grafieken toe
+          git add Strategies/results/daily_analysis_z_score_strategy/
+          
+          # Controleer of er daadwerkelijk iets nieuws te committen valt om foutmeldingen te voorkomen
+          if git diff-index --quiet HEAD --; then
+            echo "📭 Geen nieuwe handelsdata of sessieresultaten gevonden deze ronde."
+          else
+            git commit -m "📊 MANTRA Systemic Sync: Automated Layered Session Reports [skip ci]"
+            git push origin HEAD:${{ github.ref }}
+            echo "✅ Succesvol nieuwe dagsessies, ROI-curves en 3-panel dashboards gepusht!"
+          fi
