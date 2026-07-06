@@ -8,7 +8,7 @@ from sklearn.ensemble import IsolationForest
 # =========================================================================
 # 🎛️ CENTRAL CONFIGURATION PANEL (AANPASBARE PARAMETERS)
 # =========================================================================
-DATA_LIMIT = 5000         # Wijzig dit getal om meer of minder historie te verwerken
+DATA_LIMIT = 8000         # Wijzig dit getal om meer of minder historie te verwerken
 AGGREGATION_MINUTES = 30  # Het macro-regime voor prijsveranderingen
 WINDOW_SIZE = 300         # Rolling training window van 4 uur (240 minuten)
 
