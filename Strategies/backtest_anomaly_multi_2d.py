@@ -9,12 +9,12 @@ from datetime import datetime, time
 # =========================================================================
 DATA_LIMIT = 5000         
 RATIO_LOOKBACK = 240       
-Z_THRESHOLD = 1.5          # Met de AI-veiligheidsgordel om kunnen we eerder instappen (1.5)
+Z_THRESHOLD = 1          # Met de AI-veiligheidsgordel om kunnen we eerder instappen (1.5)
 
 # Minimale wiskundig verwachte winst in % om de trade te accepteren
-MIN_EXPECTED_WIN_PCT = 0.10  
+MIN_EXPECTED_WIN_PCT = 0.20  
 
-MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
+MAX_DURATION = 60         # Parachute: Harde maximale duration timeout in minuten
 
 # Mappenstructuur
 RESULT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
