@@ -10,36 +10,35 @@ INPUT_FOLDER = "US500"
 OUTPUT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_single")
 OUTPUT_CSV = os.path.join(OUTPUT_DIR, "us500_analyzed_data.csv")
 OUTPUT_PLOT = os.path.join(OUTPUT_DIR, "us500_anomalies_chart.png")
+OUTPUT_REPORT = os.path.join(OUTPUT_DIR, "anomaly_report.md")
 
-AGGREGATION_MINUTES = 15  # Het macro-regime van 15 minuten
-WINDOW_SIZE = 240         # Rolling training window van 4 uur (240 minuten)
+AGGREGATION_MINUTES = 15  # Het macro-regime van 15 minutes
+WINDOW_SIZE = 240         # Rolling training window van 4 uur
 
 def detect_us500_anomalies():
     print(f"🧠 ML Engine gestart voor data uit map: {INPUT_FOLDER}...")
 
-    # 1️⃣ Automatisch het merged CSV-bestand opsporen in de map US500
+    # 1️⃣ Automatisch het merged CSV-bestand opsporen
     search_pattern = os.path.join(INPUT_FOLDER, "outputs_merged_*.csv")
     csv_files = sorted(glob.glob(search_pattern))
 
     if not csv_files:
-        print(f"❌ Fout: Geen samengevoegd bestand gevonden (outputs_merged_*.csv) in map '{INPUT_FOLDER}'")
+        print(f"❌ Fout: Geen samengevoegd bestand gevonden in map '{INPUT_FOLDER}'")
         return
 
     latest_merged_file = csv_files[-1]
-    print(f"📂 Input bestand ingeladen: {latest_merged_file}")
-
     df = pd.read_csv(latest_merged_file)
     df['time'] = pd.to_datetime(df['time'])
     df = df.sort_values('time').reset_index(drop=True)
 
-    # 2️⃣ Feature Engineering (Mid-prijs & Overlapping Returns berekenen)
+    # 2️⃣ Feature Engineering
     df['close_mid'] = (df['close_bid'] + df['close_ask']) / 2
     df['US500_return'] = df['close_mid'].pct_change(periods=AGGREGATION_MINUTES)
 
     df = df.dropna(subset=['US500_return', 'volume']).reset_index(drop=True)
 
     if len(df) < (WINDOW_SIZE + 10):
-        print(f"⚠️ Te weinig datahistorie om het rolling window van {WINDOW_SIZE} minuten te vullen.")
+        print("⚠️ Te weinig datahistorie.")
         return
 
     market_features = df[['US500_return', 'volume']].values
@@ -62,40 +61,90 @@ def detect_us500_anomalies():
     df['anomaly_score'] = rolling_scores
     df['is_anomaly'] = rolling_anomalies
 
-    # Maak de geneste resultatenmap automatisch aan als deze nog niet bestaat
+    # =========================================================================
+    # 🔍 STRATEGISCHE CLASSIFICATIE TOEVOEGEN
+    # =========================================================================
+    df['anomaly_type'] = 'NORMAL'
+    
+    # Bereken dynamische drempels voor volume (95e percentiel van de afgelopen 4 uur)
+    df['rolling_vol_threshold'] = df['volume'].rolling(window=WINDOW_SIZE).quantile(0.95)
+
+    for idx in df[df['is_anomaly'] == 1].index:
+        ret_val = df.loc[idx, 'US500_return']
+        vol_val = df.loc[idx, 'volume']
+        vol_thresh = df.loc[idx, 'rolling_vol_threshold']
+
+        # Classificeer op basis van de richting van het rendement en volume
+        if ret_val > 0.0005:  # Significante stijging
+            df.loc[idx, 'anomaly_type'] = 'UP_SHOCK'
+        elif ret_val < -0.0005:  # Significante daling
+            df.loc[idx, 'anomaly_type'] = 'DOWN_SHOCK'
+        elif vol_val > vol_thresh:
+            df.loc[idx, 'anomaly_type'] = 'VOLUME_SURGE'
+        else:
+            df.loc[idx, 'anomaly_type'] = 'VOLATILITY_SPKE'
+
+    # Mappen aanmaken indien nodig
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
-        print(f"📂 Nieuwe resultatenmap aangemaakt: {OUTPUT_DIR}")
 
-    # Sla de resultaten op in de specifieke resultatenmap
     df.to_csv(OUTPUT_CSV, index=False)
-    print(f"✅ Geanalyseerde data succesvol opgeslagen: {OUTPUT_CSV}")
 
     # =========================================================================
-    # 📊 VISUALISATIE GENEREREN (ZONDER GATEN/WEEKENDEN)
+    # 📊 ANOMALY RAPPORT GENEREREN (.MD BESTAND)
     # =========================================================================
-    print("📊 Grafiek genereren zonder weekend-gaten...")
+    print("📝 Genereren van strategisch anomaly rapport...")
+    anomalies_only = df[df['is_anomaly'] == 1].copy()
+    
+    with open(OUTPUT_REPORT, 'w') as f:
+        f.write("# 🚨 MANTRA: US500 Trading Signal Audit Ledger\n\n")
+        f.write(f"Rapport gegenereerd op basis van de laatste data run. ")
+        f.write(f"Totaal aantal gedetecteerde anomalieën: **{len(anomalies_only)}**\n\n")
+        f.write("### 📈 Actieve Signaal Matrix\n")
+        f.write("| Timestamp (UTC) | Price ($) | 15m Return % | Volume | Classification | Potential Strategy |\n")
+        f.write("| :--- | :--- | :--- | :--- | :--- | :--- |\n")
+        
+        for _, row in anomalies_only.iterrows():
+            time_str = row['time'].strftime('%Y-%m-%d %H:%M')
+            ret_pct = f"{row['US500_return'] * 100:.3f}%"
+            
+            # Wijs een potentiële trading logica toe op basis van het type
+            if row['anomaly_type'] == 'UP_SHOCK':
+                strat = "🔴 SHORT (Mean Reversion) / 🟢 BUY (Momentum)"
+            elif row['anomaly_type'] == 'DOWN_SHOCK':
+                strat = "🟢 LONG (Mean Reversion) / 🔴 SELL (Momentum)"
+            else:
+                strat = "👀 WAIT (Volume Liquidity Spike)"
+                
+            f.write(f"| {time_str} | {row['close_mid']:.2f} | {ret_pct} | {int(row['volume'])} | **{row['anomaly_type']}** | {strat} |\n")
+
+    print(f"✅ Strategisch rapport opgeslagen op: {OUTPUT_REPORT}")
+
+    # =========================================================================
+    # 📊 VISUALISATIE GENEREREN
+    # =========================================================================
+    print("📊 Grafiek genereren...")
     active_df = df.iloc[WINDOW_SIZE:].reset_index(drop=True)
-    anomalies_df = active_df[active_df['is_anomaly'] == 1]
-
+    
     plt.figure(figsize=(14, 7))
+    plt.plot(active_df.index, active_df['close_mid'], color='#1f78b4', alpha=0.6, label='US500 Mid Price Baseline', linewidth=1.5)
     
-    # CRUCIAAL: Plot tegen de INDEX (rijnummers) in plaats van de datetime-as
-    plt.plot(active_df.index, active_df['close_mid'], color='#1f78b4', alpha=0.8, label='US500 Mid Price Baseline', linewidth=1.5)
+    # Plot verschillende kleuren per anomalie-type voor maximaal inzicht
+    colors = {'UP_SHOCK': 'green', 'DOWN_SHOCK': 'red', 'VOLUME_SURGE': 'orange', 'VOLATILITY_SPKE': 'purple'}
+    markers = {'UP_SHOCK': '^', 'DOWN_SHOCK': 'v', 'VOLUME_SURGE': 'o', 'VOLATILITY_SPKE': 's'}
     
-    # Plot de anomalieën op hun bijbehorende indexlocatie
-    plt.scatter(anomalies_df.index, anomalies_df['close_mid'], color='purple', marker='^', s=60, label='ML Anomaly Trigger', zorder=5)
-    
-    # SLIMME X-AS LABELS: We kiezen een aantal meetpunten verdeeld over de grafiek
+    for a_type in ['UP_SHOCK', 'DOWN_SHOCK', 'VOLUME_SURGE', 'VOLATILITY_SPKE']:
+        type_df = active_df[active_df['anomaly_type'] == a_type]
+        if not type_df.empty:
+            plt.scatter(type_df.index, type_df['close_mid'], color=colors[a_type], 
+                        marker=markers[a_type], s=65, label=f'ML {a_type}', zorder=5)
+            
     num_ticks = 8
     tick_indices = np.linspace(0, len(active_df) - 1, num_ticks, dtype=int)
-    # Zet de timestamps om naar leesbare strings voor de as
     tick_labels = active_df['time'].dt.strftime('%m-%d %H:%M').iloc[tick_indices].values
-    
-    # Pas de ticks handmatig toe op de grafiek
     plt.xticks(tick_indices, tick_labels, rotation=25)
     
-    plt.title("MANTRA Single-Asset Production Node: US500 Anomaly Detection", fontsize=12, fontweight='bold', loc='left')
+    plt.title("MANTRA Production Engine: Directional US500 Anomaly Matrix", fontsize=12, fontweight='bold', loc='left')
     plt.xlabel("Timeline (Market Open Minutes)", fontsize=10)
     plt.ylabel("Index Mid Price ($)", fontsize=10)
     plt.grid(True, linestyle=':', alpha=0.5)
@@ -104,7 +153,7 @@ def detect_us500_anomalies():
     plt.tight_layout()
     plt.savefig(OUTPUT_PLOT, dpi=300)
     plt.close()
-    print(f"✅ Anomaly dashboard succesvol opgeslagen op: {OUTPUT_PLOT}\n")
+    print(f"✅ Dashboard succesvol opgeslagen op: {OUTPUT_PLOT}\n")
 
 if __name__ == "__main__":
     detect_us500_anomalies()
