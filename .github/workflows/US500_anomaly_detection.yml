@@ -5,10 +5,10 @@ permissions:
 
 on:
   # Triggert automatisch zodra de data-ingestie succesvol is afgerond
-  workflow_run:
-    workflows: ["Update Market Data ALL_EPICS"]
-    types:
-      - completed
+ # workflow_run:
+ #   workflows: ["Update Market Data ALL_EPICS"]
+ #   types:
+ #     - completed
   # Maakt handmatige uitvoering mogelijk via de GitHub interface
   workflow_dispatch:
 
