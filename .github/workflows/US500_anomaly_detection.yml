@@ -26,28 +26,28 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Cruciaal: Installeer de libraries die nodig zijn voor ML en visualisatie
+      # Installeer de libraries die nodig zijn voor ML en visualisatie
       - name: Install dependencies
         run: |
           pip install pandas scikit-learn matplotlib
 
-      # AANGEPAST: Pad verwijst nu naar de exacte naam in je repository
+      # Uitvoeren van het single-asset script uit je repository
       - name: Run US500 Anomaly Detection ML Engine
         run: python Strategies/strategy_anomaly_single.py
 
-      # Sla de gegenereerde CSV en PNG grafiek direct op in de US500 map van je repo
+      # Sla de gegenereerde bestanden uit de nieuwe resultatenmap op in je repository
       - name: Push Analysis Artifacts
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           
-          # Voeg specifiek de nieuwe analyse-outputs toe
-          git add US500/us500_analyzed_data.csv US500/us500_anomalies_chart.png
+          # AANGEPAST: Voeg de volledige nieuwe resultatenmap toe aan de git-commit
+          git add Strategies/results/strategy_anomaly_single/
           
           if ! git diff-index --quiet HEAD; then
-            git commit -m "Update US500 anomaly telemetry and chart dashboards"
+            git commit -m "Update US500 anomaly telemetry and chart dashboards in results folder"
             git pull --rebase origin master
             git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           else
-            echo "Geen wijzigingen gedetecteerd in de US500 anomalieën."
+            echo "Geen wijzigingen gedetecteerd in de resultaten."
           fi
