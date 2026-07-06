@@ -5,33 +5,37 @@ import matplotlib.pyplot as plt
 from datetime import datetime, time
 
 # =========================================================================
-# 🎛️ CENTRAL CONFIGURATION PANEL (PURE Z-SCORE STATISTICAL ARBITRAGE)
+# 🎛️ CENTRAL CONFIGURATION PANEL (PURE STATISTICAL ARBITRAGE)
 # =========================================================================
-DATA_LIMIT = 5000         # Aantal synchrone minuten om te analyseren
-RATIO_LOOKBACK = 240       # 4 uur rolling window om het historisch gemiddelde te bepalen
-Z_THRESHOLD = 3          # De statistische drempel (elastiek-spanning) voor de instap
+DATA_LIMIT = 5000         # Match met je ML engine
+RATIO_LOOKBACK = 240       # 4 uur rolling window om de 'normale' verhouding te bepalen
+Z_THRESHOLD = 2.2          # Alleen instappen bij extreme elastiek-spanning
 
-# Minimale wiskundig verwachte winst in % om de trade te accepteren
-MIN_EXPECTED_WIN_PCT = 0.20  
+# 🔥 TEST PARAMETER: Zet op False voor pure Z-score trading. Zet op True voor ML-kwaliteitsfilter.
+USE_ML_FILTER = False      
 
-MAX_DURATION = 60         # Parachute: Harde maximale duration timeout in minuten
+# Minimale verwachte winst in % op de totale combinatie om de trade te accepteren
+MIN_EXPECTED_WIN_PCT = 0.10  
+
+MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
 
 # Mappenstructuur
 RESULT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
 INPUT_CSV = os.path.join(RESULT_DIR, "multi_asset_2d_analyzed_data.csv")
 OUTPUT_REPORT = os.path.join(RESULT_DIR, "multi_backtest_report.md")
 
-# Output grafieken
+# Twee aparte PNG-bestanden om beide grafieken te behouden
 OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # De paarse ROI vermogensgrafiek
 OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell/Z-score dashboard
 
-def run_pure_zscore_backtest():
-    print(f"🚀 MANTRA Pure Z-Score Arbitrage Engine Gestart (Klassieke Modus)...")
+def run_multi_backtest():
+    filter_status = "INGESCHAKELD" if USE_ML_FILTER else "UITGESCHAKELD (Pure Z-Score Mode)"
+    print(f"🚀 MANTRA Arbitrage Engine Gestart... [AI Filter: {filter_status}]")
     if not os.path.exists(INPUT_CSV):
-        print(f"❌ Fout: {INPUT_CSV} ontbreekt. Zorg dat de basis asset-data aanwezig is!")
+        print(f"❌ Fout: {INPUT_CSV} ontbreekt. Run eerst de multi ML engine!")
         return
 
-    # Inladen en sorteren van de marktdata
+    # Inladen gesynchroniseerde data
     df = pd.read_csv(INPUT_CSV)
     df['time'] = pd.to_datetime(df['time'])
     df = df.sort_values('time').reset_index(drop=True)
@@ -39,7 +43,7 @@ def run_pure_zscore_backtest():
     if len(df) > DATA_LIMIT:
         df = df.tail(DATA_LIMIT).reset_index(drop=True)
 
-    # Pure Wiskundige Spread & Z-Score Berekening
+    # Wiskundige Spread & Ratio Berekening
     df['ratio'] = df['US500_price'] / df['GOLD_price']
     df['ratio_mean'] = df['ratio'].rolling(window=RATIO_LOOKBACK).mean()
     df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
@@ -57,7 +61,7 @@ def run_pure_zscore_backtest():
     equity_curve = [0.0]
     skipped_trades_count = 0  
 
-    # Real-time Marktsimulatie Loop
+    # Marktsimulatie Loop
     for i in range(len(df)):
         row = df.iloc[i]
         curr_time = row['time'].time()
@@ -65,7 +69,7 @@ def run_pure_zscore_backtest():
         z_curr = row['z_score']
 
         # ---------------------------------------------------------------------
-        # CASE A: ACTIEVE POSITIE (Wacht op herstel naar het gemiddelde Z=0)
+        # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Check Pure Convergence, Timeout of EOD)
         # ---------------------------------------------------------------------
         if position is not None:
             if position == 'US500_SHORT_GOLD_LONG':
@@ -75,10 +79,8 @@ def run_pure_zscore_backtest():
                 pct_us500 = ((row['US500_close_bid'] - entry_us500) / entry_us500) * 100
                 pct_gold = ((entry_gold - row['GOLD_close_ask']) / entry_gold) * 100
             
-            # Reëel gehalveerd rendement over het totale portfoliokapitaal
             float_pnl_combination = (pct_us500 + pct_gold) / 2
             
-            # Check op statistische convergentie (elastiek schiet terug naar het gemiddelde)
             converged = False
             if position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
                 converged = True
@@ -110,40 +112,42 @@ def run_pure_zscore_backtest():
                 continue
 
         # ---------------------------------------------------------------------
-        # CASE B: GEEN OPENDE POSITIE (Uitsluitend monitoren van de Z-Score)
+        # CASE B: GEEN OPENDE POSITIE (Wacht op Extreme Z-Score [+ Optioneel ML])
         # ---------------------------------------------------------------------
         else:
-            if is_inside_hours and abs(z_curr) >= Z_THRESHOLD:
+            if is_inside_hours:
+                # Evalueer de switch: Als USE_ML_FILTER True is, moet er een anomalie zijn. Anders negeren we dat.
+                ml_signal_valid = (row['is_system_anomaly'] == 1) if USE_ML_FILTER else True
                 
-                # Berekening van de puur wiskundig verwachte winst tot aan het gemiddelde
-                expected_win_pct = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
-                
-                # Toegangspoort filter
-                if expected_win_pct < MIN_EXPECTED_WIN_PCT:
-                    skipped_trades_count += 1
-                    continue
-                
-                if z_curr >= Z_THRESHOLD:
-                    position = 'US500_SHORT_GOLD_LONG'
-                    entry_us500 = row['US500_close_bid']  
-                    entry_gold = row['GOLD_close_ask']    
-                    entry_time = row['time']
-                    entry_idx = i
+                if ml_signal_valid and abs(z_curr) >= Z_THRESHOLD:
                     
-                elif z_curr <= -Z_THRESHOLD:
-                    position = 'US500_LONG_GOLD_SHORT'
-                    entry_us500 = row['US500_close_ask']   
-                    entry_gold = row['GOLD_close_bid']     
-                    entry_time = row['time']
-                    entry_idx = i
+                    expected_win_pct = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
+                    
+                    if expected_win_pct < MIN_EXPECTED_WIN_PCT:
+                        skipped_trades_count += 1
+                        continue
+                    
+                    if z_curr >= Z_THRESHOLD:
+                        position = 'US500_SHORT_GOLD_LONG'
+                        entry_us500 = row['US500_close_bid']  
+                        entry_gold = row['GOLD_close_ask']    
+                        entry_time = row['time']
+                        entry_idx = i
+                        
+                    elif z_curr <= -Z_THRESHOLD:
+                        position = 'US500_LONG_GOLD_SHORT'
+                        entry_us500 = row['US500_close_ask']   
+                        entry_gold = row['GOLD_close_bid']     
+                        entry_time = row['time']
+                        entry_idx = i
 
     # ---------------------------------------------------------------------
     # 📝 LEDGER RAPPORTAGE GENEREREN (.MD)
     # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
-        f.write("# 📊 MANTRA: Pure Z-Score Statistical Arbitrage Ledger\n\n")
-        f.write("* **Strategy Mode:** `PURE CLASSICAL Z-SCORE` (No ML Filter)\n")
+        f.write("# 📊 MANTRA: Cross-Asset Statistical Arbitrage Ledger\n\n")
+        f.write(f"* **AI Quality Filter Mode:** `{'ENABLED' if USE_ML_FILTER else 'DISABLED (Pure Z-Score Mode)'}`\n")
         if len(trades_df) > 0:
             winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
             f.write(f"* **Total Systemic Trades Executed:** {len(trades_df)}\n")
@@ -185,7 +189,7 @@ def run_pure_zscore_backtest():
         plt.close()
 
         # ---------------------------------------------------------------------
-        # 📊 GRAFIEK 2: GEOPTIMALISEERD 3-LAGIG DASHBOARD
+        # 📊 GRAFIEK 2: DUAL-ASSET EXECUTION DASHBOARD (WITH Z-SCORE)
         # ---------------------------------------------------------------------
         print("📊 Genereren van het gelaagde 3-Plots Execution Dashboard...")
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
@@ -229,7 +233,7 @@ def run_pure_zscore_backtest():
         ax1.set_ylabel("US500 Index Price ($)", fontsize=10)
         ax1.grid(True, linestyle=':', alpha=0.4)
         ax1.legend(loc="upper left", frameon=True, shadow=True)
-        ax1.set_title("MANTRA Arbitrage Node: Real-time Pure Z-Score Execution Dashboard", fontsize=12, fontweight='bold', loc='left')
+        ax1.set_title("MANTRA Arbitrage Node: Real-time Pairs Trading Execution Dashboard", fontsize=12, fontweight='bold', loc='left')
 
         ax2.set_ylabel("Gold Price ($)", fontsize=10)
         ax2.grid(True, linestyle=':', alpha=0.4)
@@ -247,7 +251,7 @@ def run_pure_zscore_backtest():
         plt.tight_layout()
         plt.savefig(OUTPUT_CHART_EXEC, dpi=300)
         plt.close()
-        print(f"✅ Dashboard succesvol opgeslagen op: {OUTPUT_CHART_EXEC}\n")
+        print(f"✅ Dashboard succesvol bijgewerkt op: {OUTPUT_CHART_EXEC}\n")
 
 if __name__ == "__main__":
-    run_pure_zscore_backtest()
+    run_multi_backtest()
