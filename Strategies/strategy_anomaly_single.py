@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.ensemble import IsolationForest
 
-# Instellingen voor mappen (Input blijft uit US500 komen, outputs gaan naar de resultatenmap)
+# Instellingen voor mappen
 INPUT_FOLDER = "US500"
 OUTPUT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_single")
 OUTPUT_CSV = os.path.join(OUTPUT_DIR, "us500_analyzed_data.csv")
@@ -72,22 +72,34 @@ def detect_us500_anomalies():
     print(f"✅ Geanalyseerde data succesvol opgeslagen: {OUTPUT_CSV}")
 
     # =========================================================================
-    # 📊 VISUALISATIE GENEREREN
+    # 📊 VISUALISATIE GENEREREN (ZONDER GATEN/WEEKENDEN)
     # =========================================================================
-    print("📊 Grafiek genereren met triggers...")
+    print("📊 Grafiek genereren zonder weekend-gaten...")
     active_df = df.iloc[WINDOW_SIZE:].reset_index(drop=True)
     anomalies_df = active_df[active_df['is_anomaly'] == 1]
 
     plt.figure(figsize=(14, 7))
-    plt.plot(active_df['time'], active_df['close_mid'], color='#1f78b4', alpha=0.8, label='US500 Mid Price Baseline', linewidth=1.5)
-    plt.scatter(anomalies_df['time'], anomalies_df['close_mid'], color='purple', marker='^', s=60, label='ML Anomaly Trigger', zorder=5)
+    
+    # CRUCIAAL: Plot tegen de INDEX (rijnummers) in plaats van de datetime-as
+    plt.plot(active_df.index, active_df['close_mid'], color='#1f78b4', alpha=0.8, label='US500 Mid Price Baseline', linewidth=1.5)
+    
+    # Plot de anomalieën op hun bijbehorende indexlocatie
+    plt.scatter(anomalies_df.index, anomalies_df['close_mid'], color='purple', marker='^', s=60, label='ML Anomaly Trigger', zorder=5)
+    
+    # SLIMME X-AS LABELS: We kiezen een aantal meetpunten verdeeld over de grafiek
+    num_ticks = 8
+    tick_indices = np.linspace(0, len(active_df) - 1, num_ticks, dtype=int)
+    # Zet de timestamps om naar leesbare strings voor de as
+    tick_labels = active_df['time'].dt.strftime('%m-%d %H:%M').iloc[tick_indices].values
+    
+    # Pas de ticks handmatig toe op de grafiek
+    plt.xticks(tick_indices, tick_labels, rotation=25)
     
     plt.title("MANTRA Single-Asset Production Node: US500 Anomaly Detection", fontsize=12, fontweight='bold', loc='left')
-    plt.xlabel("Timeline (UTC)", fontsize=10)
+    plt.xlabel("Timeline (Market Open Minutes)", fontsize=10)
     plt.ylabel("Index Mid Price ($)", fontsize=10)
     plt.grid(True, linestyle=':', alpha=0.5)
     plt.legend(loc="upper left")
-    plt.gcf().autofmt_xdate()
     
     plt.tight_layout()
     plt.savefig(OUTPUT_PLOT, dpi=300)
