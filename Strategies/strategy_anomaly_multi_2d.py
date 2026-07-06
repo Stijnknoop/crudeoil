@@ -10,7 +10,7 @@ from tqdm import tqdm
 # 🎛️ CENTRAL CONFIGURATION PANEL (PURE LIVE MINUTE-BY-MINUTE SIMULATION)
 # =========================================================================
 DATA_LIMIT = 5000         # Aantal synchrone minuten om te analyseren
-AGGREGATION_MINUTES = 15  # Return window voor de onderlinge relatie
+AGGREGATION_MINUTES = 30  # Return window voor de onderlinge relatie
 WINDOW_SIZE = 240         # 4 uur rolling lookback voor de markt-relatie
 
 # Output mappen
