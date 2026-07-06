@@ -5,10 +5,10 @@ permissions:
 
 on:
   # Triggert automatisch zodra de algemene data-ingestie succesvol is afgerond
-#  workflow_run:
-#    workflows: ["Update Market Data ALL_EPICS"]
-#    types:
-#      - completed
+  workflow_run:
+    workflows: ["Update Market Data ALL_EPICS"]
+    types:
+      - completed
   # Maakt handmatige uitvoering mogelijk via de GitHub Actions interface
   workflow_dispatch:
 
@@ -25,32 +25,38 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Installeer de libraries die nodig zijn voor ML, visualisatie, de voortgangsbalk én de backtest
+      # Installeer alle benodigde data science libraries inclusief de voortgangsbalk
       - name: Install dependencies
         run: |
           pip install pandas scikit-learn matplotlib tqdm
 
-      # Stap 1: Uitvoeren van de pure 2D Safe-Haven cross correlation engine (elke minuut her-trainen)
+      # Stap 1: De realtime cross-correlation AI Engine (elke minuut her-trainen)
       - name: Run Multi-Asset Safe Haven ML Engine
         run: python Strategies/strategy_anomaly_multi_2d.py
 
-      # Stap 2: NIEUW - Uitvoeren van de Cross-Asset Pairs Trading Arbitrage Backtester
+      # Stap 2: De Cross-Asset Pairs Trading Arbitrage Backtester (met Mean Reversion Convergence Exit)
       - name: Run Cross-Asset Arbitrage Backtest Engine
         run: python Strategies/backtest_anomaly_multi_2d.py
 
-      # Stap 3: Sla alle gegenereerde bestanden (ML CSV + Backtest MD rapport + charts) automatisch op in de repo
+      # Stap 3: Sla alle resultaten (CSV's, MD-rapport en de 2 PNG grafieken) veilig op in je repository
       - name: Push Multi-Asset Dashboards and Artifacts
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           
-          # Voeg de volledige resultatenmap toe (bevat nu alle statistieken en visualisaties)
-          git add Strategies/results/strategy_anomaly_multi_2d/
+          # DEFENSIEVE CHECK: Voeg de map alleen toe aan Git als deze daadwerkelijk is aangemaakt
+          if [ -d "Strategies/results/strategy_anomaly_multi_2d" ]; then
+            echo "📁 Resultatenmap gevonden, toevoegen aan Git staging..."
+            git add Strategies/results/strategy_anomaly_multi_2d/
+          else
+            echo "⚠️ Waarschuwing: Geen resultatenmap gegenereerd tijdens deze run. Git add overslaan."
+          fi
           
+          # Commit en push de boel alleen als er daadwerkelijk wijzigingen klaarliggen
           if ! git diff-index --quiet HEAD; then
-            git commit -m "Update MANTRA multi-asset 2d telemetry, statistical arbitrage backtests, and charts"
+            git commit -m "Update MANTRA multi-asset 2d telemetry, convergence backtests, and dual-chart dashboards"
             git pull --rebase origin master
             git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           else
-            echo "Geen wijzigingen gedetecteerd in de safe-haven resultaten."
+            echo "Geen wijzigingen gedetecteerd in de safe-haven resultaten. Push overgeslagen."
           fi
