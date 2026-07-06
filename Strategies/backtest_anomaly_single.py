@@ -14,7 +14,7 @@ VOLATILITY_WINDOW = 15  # Volatilitetsmeting van de afgelopen 15 minuten
 
 # AANGEPAST: Gevraagde multipliers voor asymmetrisch risico
 SL_MULTIPLIER = 2.5    # Verhoogd naar 2.5 voor flink wat ademruimte
-TP_MULTIPLIER = 0.5    # Zo gehouden op 0.5 voor scherpe winstneming
+TP_MULTIPLIER = 1    # Zo gehouden op 0.5 voor scherpe winstneming
 
 MAX_DURATION = 30      # Maximale doorlooptijd van een trade in minuten
 
