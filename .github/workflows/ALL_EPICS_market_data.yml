@@ -17,7 +17,7 @@ jobs:
     strategy:
       max-parallel: 1  # Voert de assets één voor één uit in plaats van tegelijk
       matrix:
-        asset: [OIL_CRUDE, NATURALGAS, GOLD]
+        asset: [OIL_CRUDE, NATURALGAS, GOLD, US500]
       # Als 1 faalt, moeten de anderen wel doorgaan
       fail-fast: false
 
