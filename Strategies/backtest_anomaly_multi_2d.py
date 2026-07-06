@@ -9,10 +9,10 @@ from datetime import datetime, time
 # =========================================================================
 DATA_LIMIT = 5000         # Match met je ML engine
 RATIO_LOOKBACK = 240       # 4 uur rolling window om de 'normale' verhouding te bepalen
-Z_THRESHOLD = 2.2          # Alleen instappen bij extreme elastiek-spanning
+Z_THRESHOLD = 1.5          # Alleen instappen bij extreme elastiek-spanning
 
 # 🔥 NIEUW: Minimale verwachte winst in % op de totale combinatie om de trade überhaupt te accepteren
-MIN_EXPECTED_WIN_PCT = 0.10  # Instelbaar (bvb. 0.10% netto portfolio opbrengst)
+MIN_EXPECTED_WIN_PCT = 0.20  # Instelbaar (bvb. 0.10% netto portfolio opbrengst)
 
 MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
 
