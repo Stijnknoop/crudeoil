@@ -9,7 +9,7 @@ from datetime import datetime, time
 # =========================================================================
 DATA_LIMIT = 5000         # Match met je ML engine
 RATIO_LOOKBACK = 240       # 4 uur rolling window om de 'normale' verhouding te bepalen
-Z_THRESHOLD = 2.2          # 🔥 GEOPTIMALISEERD: Alleen instappen bij extreme elastiek-spanning
+Z_THRESHOLD = 2.2          # Alleen instappen bij extreme elastiek-spanning
 TP_VOL_MULTIPLIER = 0.5    # Multiplier op de rolling ratio volatiliteit voor het winstdoel
 MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
 
@@ -23,7 +23,7 @@ OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # 
 OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell dashboard
 
 def run_multi_backtest():
-    print(f"🚀 MANTRA Arbitrage Dynamic-TP Engine Gestart...")
+    print(f"🚀 MANTRA Arbitrage Portfolio Engine (Dynamic TP) Gestart...")
     if not os.path.exists(INPUT_CSV):
         print(f"❌ Fout: {INPUT_CSV} ontbreekt. Run eerst de multi ML engine!")
         return
@@ -49,7 +49,7 @@ def run_multi_backtest():
     entry_time = None
     entry_us500 = 0.0
     entry_gold = 0.0
-    active_tp = 0.0  # Onthoudt het dynamische winstdoel van de lopende trade
+    active_tp = 0.0  
 
     trades_log = []
     equity_curve = [0.0]
@@ -65,7 +65,6 @@ def run_multi_backtest():
         # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Check Dynamic TP, Convergence, Timeout)
         # ---------------------------------------------------------------------
         if position is not None:
-            # Bereken de realtime zwevende procentuele PnL op de sluiting van deze minuut
             if position == 'US500_SHORT_GOLD_LONG':
                 pct_us500 = ((entry_us500 - row['US500_close_ask']) / entry_us500) * 100
                 pct_gold = ((row['GOLD_close_bid'] - entry_gold) / entry_gold) * 100
@@ -73,7 +72,7 @@ def run_multi_backtest():
                 pct_us500 = ((row['US500_close_bid'] - entry_us500) / entry_us500) * 100
                 pct_gold = ((entry_gold - row['GOLD_close_ask']) / entry_gold) * 100
             
-            # Reëel rendement over de totale portfolio-inleg (gemiddelde van de legs)
+            # Portfolio-ROI: Gemiddelde van beide legs (dollar-neutral)
             float_pnl_combination = (pct_us500 + pct_gold) / 2
             
             trigger_exit = False
@@ -123,7 +122,7 @@ def run_multi_backtest():
             if is_inside_hours and row['is_system_anomaly'] == 1:
                 if abs(z_curr) >= Z_THRESHOLD:
                     
-                    # 🔍 BEREKENING VAN DE GEKOPPELDE TRANSACTIE-VLOER (SPREAD FILTER)
+                    # Berekening van de gekoppelde transactie-vloer (Spread Filter)
                     spread_us500_pct = ((row['US500_close_ask'] - row['US500_close_bid']) / row['US500_price']) * 100
                     spread_gold_pct = ((row['GOLD_close_ask'] - row['GOLD_close_bid']) / row['GOLD_price']) * 100
                     total_spread_friction = (spread_us500_pct + spread_gold_pct) / 2
@@ -131,7 +130,7 @@ def run_multi_backtest():
                     # Dynamisch winstdoel op basis van de huidige marktbeweeglijkheid
                     raw_dynamic_tp = (row['ratio_std'] / row['ratio_mean']) * 100 * TP_VOL_MULTIPLIER
                     
-                    # 🔥 DE HARD FLOOR: Moet altijd groter zijn dan 1.5x de broker frictiekosten
+                    # Hard Floor: Moet altijd groter zijn dan 1.5x de broker frictiekosten
                     active_tp = max(raw_dynamic_tp, total_spread_friction * 1.5)
                     
                     if z_curr >= Z_THRESHOLD:
@@ -149,7 +148,7 @@ def run_multi_backtest():
                         entry_idx = i
 
     # ---------------------------------------------------------------------
-    # 📝 LEDGER RAPPORTAGE MET PORTFOLIO METRICS (.MD)
+    # 📝 LOEPZUIVERE LEDGER RAPPORTAGE (ZONDER BACKSLASH SYNTAX ERRORS)
     # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
@@ -169,16 +168,17 @@ def run_multi_backtest():
                 us500_pos = "SHORT" if "US500_SHORT" in r['type'] else "LONG"
                 gold_pos = "LONG" if "GOLD_LONG" in r['type'] else "SHORT"
                 
+                # Foutloos opgebouwde Markdown-string zonder geneste quotes of backslashes
                 f.write(f"| {idx+1} | {r['entry_time'].strftime('%m-%d %H:%M')} | {r['exit_time'].strftime('%m-%d %H:%M')} | "
                         f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
                         f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
-                        f"{r['target_tp']:.4f}% | **{r['pnl_combination'].strftime if isinstance(r['pnl_combination'], str) else f'{r[...]:.4f}' if False else f'{r[\'pnl_combination\']:.4f}%'}** | `{r['reason']}` |\n")
+                        f"{r['target_tp']:.4f}% | **{r['pnl_combination']:.4f}%** | `{r['reason']}` |\n")
         else:
             f.write("Geen cross-asset arbitrages geactiveerd binnen de huidige parameters.")
 
     if len(trades_df) > 0:
         # ---------------------------------------------------------------------
-        # 📊 GRAFIEK 1: CUMULATIEVE VERMOGENSKROMME (ROI IN %)
+        # 📊 GRAFIEK 1: CUMULATIEVE VERMOGENSKROMME
         # ---------------------------------------------------------------------
         print("📊 Genereren van de Cumulative ROI Curve...")
         plt.figure(figsize=(12, 6))
