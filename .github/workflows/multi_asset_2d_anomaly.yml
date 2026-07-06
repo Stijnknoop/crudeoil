@@ -31,12 +31,12 @@ jobs:
           pip install pandas scikit-learn matplotlib tqdm
 
       # Stap 1: De realtime cross-correlation AI Engine (elke minuut her-trainen)
-      - name: Run Multi-Asset Safe Haven ML Engine
-        run: python Strategies/strategy_anomaly_multi_2d.py
+      #- name: Run Multi-Asset Safe Haven ML Engine
+      #  run: python Strategies/strategy_anomaly_multi_2d.py
 
       # Stap 2: De Cross-Asset Pairs Trading Arbitrage Backtester (met Mean Reversion Convergence Exit)
       - name: Run Cross-Asset Arbitrage Backtest Engine
-        run: python Strategies/backtest_anomaly_multi_2d.py
+        run: python Strategies/backtest_anomaly_multi_2d_geen_ai.py
 
       # Stap 3: Sla alle resultaten (CSV's, MD-rapport en de 2 PNG grafieken) veilig op in je repository
       - name: Push Multi-Asset Dashboards and Artifacts
