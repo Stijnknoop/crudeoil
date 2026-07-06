@@ -1,116 +1,253 @@
 import os
-import glob
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.ensemble import IsolationForest
-from tqdm import tqdm
+from datetime import datetime, time
 
 # =========================================================================
-# 🎛️ CENTRAL CONFIGURATION PANEL (PURE LIVE MINUTE-BY-MINUTE SIMULATION)
+# 🎛️ CENTRAL CONFIGURATION PANEL (PURE Z-SCORE STATISTICAL ARBITRAGE)
 # =========================================================================
 DATA_LIMIT = 5000         # Aantal synchrone minuten om te analyseren
-AGGREGATION_MINUTES = 15  # Return window voor de onderlinge relatie
-WINDOW_SIZE = 240         # 4 uur rolling lookback voor de markt-relatie
+RATIO_LOOKBACK = 240       # 4 uur rolling window om het historisch gemiddelde te bepalen
+Z_THRESHOLD = 2.2          # De statistische drempel (elastiek-spanning) voor de instap
 
-# Output mappen
-OUTPUT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
-OUTPUT_CSV = os.path.join(OUTPUT_DIR, "multi_asset_2d_analyzed_data.csv")
-OUTPUT_PLOT = os.path.join(OUTPUT_DIR, "multi_asset_2d_dashboard.png")
+# Minimale wiskundig verwachte winst in % om de trade te accepteren
+MIN_EXPECTED_WIN_PCT = 0.10  
 
-def load_and_prepare_asset(folder_name):
-    search_pattern = os.path.join(folder_name, "outputs_merged_*.csv")
-    files = sorted(glob.glob(search_pattern))
-    if not files:
-        raise FileNotFoundError(f"❌ Geen data gevonden in map: {folder_name}")
-    
-    df = pd.read_csv(files[-1])
+MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
+
+# Mappenstructuur
+RESULT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
+INPUT_CSV = os.path.join(RESULT_DIR, "multi_asset_2d_analyzed_data.csv")
+OUTPUT_REPORT = os.path.join(RESULT_DIR, "multi_backtest_report.md")
+
+# Output grafieken
+OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # De paarse ROI vermogensgrafiek
+OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell/Z-score dashboard
+
+def run_pure_zscore_backtest():
+    print(f"🚀 MANTRA Pure Z-Score Arbitrage Engine Gestart (Klassieke Modus)...")
+    if not os.path.exists(INPUT_CSV):
+        print(f"❌ Fout: {INPUT_CSV} ontbreekt. Zorg dat de basis asset-data aanwezig is!")
+        return
+
+    # Inladen en sorteren van de marktdata
+    df = pd.read_csv(INPUT_CSV)
     df['time'] = pd.to_datetime(df['time'])
     df = df.sort_values('time').reset_index(drop=True)
-    
-    # Bereken mid-prijs en procentueel rendement
-    df['mid'] = (df['close_bid'] + df['close_ask']) / 2
-    df[f'{folder_name}_return'] = df['mid'].pct_change(periods=AGGREGATION_MINUTES)
-    
-    return df[['time', 'mid', 'close_bid', 'close_ask', f'{folder_name}_return']].rename(
-        columns={
-            'mid': f'{folder_name}_price',
-            'close_bid': f'{folder_name}_close_bid',
-            'close_ask': f'{folder_name}_close_ask'
-        }
-    )
 
-def run_multi_anomaly_engine():
-    print("⚡ MANTRA Safe-Haven 2D Engine Opstarten (US500 vs GOLD) ⚡")
-    print("🔄 Simulatie: Volledige her-training van het ML-model bij ÉLKE minuut...\n")
+    if len(df) > DATA_LIMIT:
+        df = df.tail(DATA_LIMIT).reset_index(drop=True)
+
+    # Pure Wiskundige Spread & Z-Score Berekening
+    df['ratio'] = df['US500_price'] / df['GOLD_price']
+    df['ratio_mean'] = df['ratio'].rolling(window=RATIO_LOOKBACK).mean()
+    df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
+    df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
     
-    print("📂 Laden van asset-databases...")
-    us500 = load_and_prepare_asset("US500")
-    gold = load_and_prepare_asset("GOLD")
-    
-    print("🔗 Synchroniseren van de tijdsassen (Cross-Asset Alignment)...")
-    merged_df = pd.merge(us500, gold, on='time', how='inner')
-    merged_df = merged_df.sort_values('time').reset_index(drop=True)
-    merged_df = merged_df.dropna().reset_index(drop=True)
-    
-    if DATA_LIMIT is not None and len(merged_df) > DATA_LIMIT:
-        merged_df = merged_df.tail(DATA_LIMIT).reset_index(drop=True)
+    df = df.dropna(subset=['z_score']).reset_index(drop=True)
+
+    position = None  
+    entry_idx = 0
+    entry_time = None
+    entry_us500 = 0.0
+    entry_gold = 0.0
+
+    trades_log = []
+    equity_curve = [0.0]
+    skipped_trades_count = 0  
+
+    # Real-time Marktsimulatie Loop
+    for i in range(len(df)):
+        row = df.iloc[i]
+        curr_time = row['time'].time()
+        is_inside_hours = time(0, 30) <= curr_time <= time(22, 0)
+        z_curr = row['z_score']
+
+        # ---------------------------------------------------------------------
+        # CASE A: ACTIEVE POSITIE (Wacht op herstel naar het gemiddelde Z=0)
+        # ---------------------------------------------------------------------
+        if position is not None:
+            if position == 'US500_SHORT_GOLD_LONG':
+                pct_us500 = ((entry_us500 - row['US500_close_ask']) / entry_us500) * 100
+                pct_gold = ((row['GOLD_close_bid'] - entry_gold) / entry_gold) * 100
+            elif position == 'US500_LONG_GOLD_SHORT':
+                pct_us500 = ((row['US500_close_bid'] - entry_us500) / entry_us500) * 100
+                pct_gold = ((entry_gold - row['GOLD_close_ask']) / entry_gold) * 100
+            
+            # Reëel gehalveerd rendement over het totale portfoliokapitaal
+            float_pnl_combination = (pct_us500 + pct_gold) / 2
+            
+            # Check op statistische convergentie (elastiek schiet terug naar het gemiddelde)
+            converged = False
+            if position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
+                converged = True
+                reason = "MEAN_REVERSION_CONVERGENCE"
+            elif position == 'US500_LONG_GOLD_SHORT' and z_curr >= 0:
+                converged = True
+                reason = "MEAN_REVERSION_CONVERGENCE"
+            
+            timeout = (i - entry_idx) >= MAX_DURATION
+            forced_eod = curr_time > time(22, 0)
+
+            if converged or timeout or forced_eod:
+                if not converged:
+                    reason = "FORCED_EOD_CLOSE" if forced_eod else "MAX_DURATION_TIMEOUT"
+                
+                exit_us500 = row['US500_close_ask'] if position == 'US500_SHORT_GOLD_LONG' else row['US500_close_bid']
+                exit_gold = row['GOLD_close_bid'] if position == 'US500_SHORT_GOLD_LONG' else row['GOLD_close_ask']
+                
+                trades_log.append({
+                    'type': position, 'entry_time': entry_time, 'exit_time': row['time'],
+                    'entry_idx': entry_idx, 'exit_idx': i,
+                    'entry_us500': entry_us500, 'exit_us500': exit_us500,
+                    'entry_gold': entry_gold, 'exit_gold': exit_gold,
+                    'pct_us500': pct_us500, 'pct_gold': pct_gold,
+                    'pnl_pct': float_pnl_combination, 'reason': reason
+                })
+                equity_curve.append(equity_curve[-1] + float_pnl_combination)
+                position = None
+                continue
+
+        # ---------------------------------------------------------------------
+        # CASE B: GEEN OPENDE POSITIE (Uitsluitend monitoren van de Z-Score)
+        # ---------------------------------------------------------------------
+        else:
+            if is_inside_hours and abs(z_curr) >= Z_THRESHOLD:
+                
+                # Berekening van de puur wiskundig verwachte winst tot aan het gemiddelde
+                expected_win_pct = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
+                
+                # Toegangspoort filter
+                if expected_win_pct < MIN_EXPECTED_WIN_PCT:
+                    skipped_trades_count += 1
+                    continue
+                
+                if z_curr >= Z_THRESHOLD:
+                    position = 'US500_SHORT_GOLD_LONG'
+                    entry_us500 = row['US500_close_bid']  
+                    entry_gold = row['GOLD_close_ask']    
+                    entry_time = row['time']
+                    entry_idx = i
+                    
+                elif z_curr <= -Z_THRESHOLD:
+                    position = 'US500_LONG_GOLD_SHORT'
+                    entry_us500 = row['US500_close_ask']   
+                    entry_gold = row['GOLD_close_bid']     
+                    entry_time = row['time']
+                    entry_idx = i
+
+    # ---------------------------------------------------------------------
+    # 📝 LEDGER RAPPORTAGE GENEREREN (.MD)
+    # ---------------------------------------------------------------------
+    trades_df = pd.DataFrame(trades_log)
+    with open(OUTPUT_REPORT, 'w') as f:
+        f.write("# 📊 MANTRA: Pure Z-Score Statistical Arbitrage Ledger\n\n")
+        f.write("* **Strategy Mode:** `PURE CLASSICAL Z-SCORE` (No ML Filter)\n")
+        if len(trades_df) > 0:
+            winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
+            f.write(f"* **Total Systemic Trades Executed:** {len(trades_df)}\n")
+            f.write(f"* **Trades Skipped by Expected-Win Filter:** {skipped_trades_count}\n")
+            f.write(f"* **Arbitrage Win Rate:** {(winning_trades / len(trades_df)) * 100:.2f}%\n")
+            f.write(f"* **Net Combined Strategy Yield (Total Capital ROI):** {trades_df['pnl_pct'].sum():.4f}%\n")
+            f.write(f"* **Average Return per Trade Combination:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
+            
+            f.write("### 📜 Geavanceerd Transactie Ledger (Leg Decomposition)\n")
+            f.write("| # | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Reason |\n")
+            f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+            
+            for idx, r in trades_df.iterrows():
+                us500_pos = "SHORT" if "US500_SHORT" in r['type'] else "LONG"
+                gold_pos = "LONG" if "GOLD_LONG" in r['type'] else "SHORT"
+                
+                f.write(f"| {idx+1} | {r['entry_time'].strftime('%m-%d %H:%M')} | {r['exit_time'].strftime('%m-%d %H:%M')} | "
+                        f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
+                        f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
+                        f"**{r['pnl_pct']:.4f}%** | `{r['reason']}` |\n")
+        else:
+            f.write("Geen cross-asset arbitrages geactiveerd binnen de huidige parameters.\n\n")
+            f.write(f"* **Trades Skipped by Expected-Win Filter:** {skipped_trades_count}\n")
+
+    if len(trades_df) > 0:
+        # ---------------------------------------------------------------------
+        # 📊 GRAFIEK 1: CUMULATIEVE VERMOGENSKROMME
+        # ---------------------------------------------------------------------
+        print("📊 Genereren van de Cumulative ROI Curve...")
+        plt.figure(figsize=(12, 6))
+        plt.plot(range(len(equity_curve)), equity_curve, color='purple', linewidth=2, marker='o', label='Combined Pairs ROI (%)')
+        plt.axhline(0, color='black', linestyle='--', alpha=0.5)
+        plt.title("MANTRA Arbitrage Node: Cumulative Growth Curve (Return in %)", fontsize=11, fontweight='bold', loc='left')
+        plt.xlabel("Sequence of Closed Pairs Trades")
+        plt.ylabel("Net Combined Return (%)")
+        plt.grid(True, linestyle=':', alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(OUTPUT_CHART_ROI, dpi=300)
+        plt.close()
+
+        # ---------------------------------------------------------------------
+        # 📊 GRAFIEK 2: GEOPTIMALISEERD 3-LAGIG DASHBOARD
+        # ---------------------------------------------------------------------
+        print("📊 Genereren van het gelaagde 3-Plots Execution Dashboard...")
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
         
-    print(f"📊 Matrix succesvol gebouwd: {len(merged_df)} synchrone handelsminuten gevonden.")
-
-    feature_cols = ['US500_return', 'GOLD_return']
-    matrix_features = merged_df[feature_cols].values
-    
-    system_anomalies = np.zeros(len(merged_df))
-    rolling_scores = np.zeros(len(merged_df))
-    
-    print(f"🧠 Starten van de intensieve minuteloop...")
-    for i in tqdm(range(WINDOW_SIZE, len(merged_df))):
-        train_slice = matrix_features[i - WINDOW_SIZE : i]
+        ax1.plot(df.index, df['US500_price'], color='#1f78b4', alpha=0.4, label='US500 Mid Price')
+        ax2.plot(df.index, df['GOLD_price'], color='#ffd700', alpha=0.5, label='GOLD Mid Price')
+        ax3.plot(df.index, df['z_score'], color='#6a3d9a', alpha=0.7, linewidth=1.5, label='Real-time Z-Score')
         
-        active_model = IsolationForest(contamination=0.02, random_state=42, n_estimators=50, n_jobs=-1)
-        active_model.fit(train_slice)
+        ax3.axhline(0, color='black', linestyle='-', alpha=0.4)
+        ax3.axhline(Z_THRESHOLD, color='red', linestyle='--', alpha=0.6, label=f'Trigger Bound (+/-{Z_THRESHOLD})')
+        ax3.axhline(-Z_THRESHOLD, color='red', linestyle='--', alpha=0.6)
         
-        current_sample = matrix_features[i].reshape(1, -1)
-        rolling_scores[i] = active_model.decision_function(current_sample)[0]
-        system_anomalies[i] = 1 if active_model.predict(current_sample)[0] == -1 else 0
+        legend_added = {"US_LONG": False, "US_SHORT": False, "AU_LONG": False, "AU_SHORT": False}
 
-    merged_df['anomaly_score'] = rolling_scores
-    merged_df['is_system_anomaly'] = system_anomalies
+        for t in trades_log:
+            e_idx = t['entry_idx']
+            x_idx = t['exit_idx']
+            
+            ax1.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
+            ax2.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
+            ax3.axvspan(e_idx, x_idx, color='purple', alpha=0.08)
+            
+            if t['type'] == 'US500_LONG_GOLD_SHORT':
+                lbl = 'Buy Order (LONG)' if not legend_added["US_LONG"] else ""
+                ax1.scatter(e_idx, t['entry_us500'], color='green', marker='^', s=120, zorder=5, label=lbl)
+                legend_added["US_LONG"] = True
+                
+                lbl = 'Sell Order (SHORT)' if not legend_added["AU_SHORT"] else ""
+                ax2.scatter(e_idx, t['entry_gold'], color='red', marker='v', s=120, zorder=5, label=lbl)
+                legend_added["AU_SHORT"] = True
+                
+            elif t['type'] == 'US500_SHORT_GOLD_LONG':
+                lbl = 'Sell Order (SHORT)' if not legend_added["US_SHORT"] else ""
+                ax1.scatter(e_idx, t['entry_us500'], color='red', marker='v', s=120, zorder=5, label=lbl)
+                legend_added["US_SHORT"] = True
+                
+                lbl = 'Buy Order (LONG)' if not legend_added["AU_LONG"] else ""
+                ax2.scatter(e_idx, t['entry_gold'], color='green', marker='^', s=120, zorder=5, label=lbl)
+                legend_added["AU_LONG"] = True
 
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-    merged_df.to_csv(OUTPUT_CSV, index=False)
-    print(f"✅ Multi-Asset 2D data succesvol opgeslagen in: {OUTPUT_CSV}")
+        ax1.set_ylabel("US500 Index Price ($)", fontsize=10)
+        ax1.grid(True, linestyle=':', alpha=0.4)
+        ax1.legend(loc="upper left", frameon=True, shadow=True)
+        ax1.set_title("MANTRA Arbitrage Node: Real-time Pure Z-Score Execution Dashboard", fontsize=12, fontweight='bold', loc='left')
 
-    print("📊 Genereren van clean 2D Dashboard...")
-    active_df = merged_df.iloc[WINDOW_SIZE:].reset_index(drop=True)
-    anomalies_only = active_df[active_df['is_system_anomaly'] == 1]
+        ax2.set_ylabel("Gold Price ($)", fontsize=10)
+        ax2.grid(True, linestyle=':', alpha=0.4)
+        ax2.legend(loc="upper left", frameon=True, shadow=True)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 8), sharex=True)
-    
-    ax1.plot(active_df.index, active_df['US500_price'], color='#1f78b4', alpha=0.6, label='US500 Baseline')
-    ax1.scatter(anomalies_only.index, anomalies_only['US500_price'], color='purple', marker='o', s=50, zorder=5, label='Systemic Trigger')
-    ax1.set_ylabel("Index Price ($)", fontsize=10)
-    ax1.grid(True, linestyle=':', alpha=0.5)
-    ax1.legend(loc='upper left')
-    ax1.set_title("MANTRA Macro Node: Pure Live Risk-On / Risk-Off Relationship Matrix", fontsize=12, fontweight='bold', loc='left')
+        ax3.set_ylabel("Statistical Z-Score", fontsize=10)
+        ax3.grid(True, linestyle=':', alpha=0.4)
+        ax3.legend(loc="upper left", frameon=True, shadow=True)
+        
+        num_ticks = 8
+        tick_indices = np.linspace(0, len(df) - 1, num_ticks, dtype=int)
+        plt.xticks(tick_indices, df['time'].dt.strftime('%m-%d %H:%M').iloc[tick_indices].values, rotation=20)
+        plt.xlabel("Timeline (Synchronized Market Open Minutes)", fontsize=10)
 
-    ax2.plot(active_df.index, active_df['GOLD_price'], color='#ffd700', alpha=0.6, label='GOLD Baseline')
-    ax2.scatter(anomalies_only.index, anomalies_only['GOLD_price'], color='purple', marker='o', s=50, zorder=5)
-    ax2.set_ylabel("Gold Price ($)", fontsize=10)
-    ax2.grid(True, linestyle=':', alpha=0.5)
-    ax2.legend(loc='upper left')
-    
-    num_ticks = 8
-    tick_indices = np.linspace(0, len(active_df) - 1, num_ticks, dtype=int)
-    plt.xticks(tick_indices, active_df['time'].dt.strftime('%m-%d %H:%M').iloc[tick_indices].values, rotation=20)
-    plt.xlabel("Timeline (Synchronized Market Open Minutes)", fontsize=10)
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT_PLOT, dpi=300)
-    plt.close()
-    print(f"✅ Dashboard succesvol opgeslagen op: {OUTPUT_PLOT}\n")
+        plt.tight_layout()
+        plt.savefig(OUTPUT_CHART_EXEC, dpi=300)
+        plt.close()
+        print(f"✅ Dashboard succesvol opgeslagen op: {OUTPUT_CHART_EXEC}\n")
 
 if __name__ == "__main__":
-    run_multi_anomaly_engine()
+    run_pure_zscore_backtest()
