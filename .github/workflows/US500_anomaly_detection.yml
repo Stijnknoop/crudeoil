@@ -32,8 +32,8 @@ jobs:
           pip install pandas scikit-learn matplotlib
 
       # Stap 1: Uitvoeren van het single-asset ML script
-      - name: Run US500 Anomaly Detection ML Engine
-        run: python Strategies/strategy_anomaly_single.py
+#      - name: Run US500 Anomaly Detection ML Engine
+#        run: python Strategies/strategy_anomaly_single.py
 
       # Stap 2: NIEUW - Uitvoeren van het quantitative backtest script
       - name: Run Quantitative Strategy Backtest Engine
