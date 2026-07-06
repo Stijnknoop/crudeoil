@@ -4,10 +4,10 @@ permissions:
   contents: write
 
 on:
-  workflow_run:
-    workflows: ["Update Market Data ALL_EPICS"]
-    types:
-      - completed
+ # workflow_run:
+ #   workflows: ["Update Market Data ALL_EPICS"]
+ #   types:
+ #     - completed
   workflow_dispatch:
 
 jobs:
