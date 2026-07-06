@@ -7,10 +7,10 @@ from datetime import datetime, time
 # =========================================================================
 # 🎛️ CENTRAL CONFIGURATION PANEL (AANPASBARE PARAMETERS)
 # =========================================================================
-DATA_LIMIT = 3000         # Moet matchen met de ML engine voor gelijke data-lengte
+DATA_LIMIT = 8000         # Moet matchen met de ML engine voor gelijke data-lengte
 VOLATILITY_WINDOW = 15    # Venster voor risicoberekening (standaarddeviatie)
 SL_MULTIPLIER = 2.5       # Ruime Stop Loss ademruimte
-TP_MULTIPLIER = 0.5       # Krappe Take Profit winstneming
+TP_MULTIPLIER = 1.0       # Krappe Take Profit winstneming
 MAX_DURATION = 30         # Maximum trade timeout in minuten
 
 # Mappenstructuur
