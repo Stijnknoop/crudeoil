@@ -70,7 +70,7 @@ def run_multi_anomaly_engine():
         train_slice = matrix_features[i - WINDOW_SIZE : i]
         
         # Initialiseer en fit het model direct op deze minuut-specifieke dataset
-        active_model = IsolationForest(contamination=0.01, random_state=42, n_estimators=50, n_jobs=-1)
+        active_model = IsolationForest(contamination=0.05, random_state=42, n_estimators=50, n_jobs=-1)
         active_model.fit(train_slice)
         
         # Voorspel de huidige minuut direct out-of-sample
