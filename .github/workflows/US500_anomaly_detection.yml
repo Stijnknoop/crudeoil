@@ -26,26 +26,30 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Installeer de libraries die nodig zijn voor ML en visualisatie
+      # Installeer de libraries die nodig zijn voor ML, visualisatie en backtesting
       - name: Install dependencies
         run: |
           pip install pandas scikit-learn matplotlib
 
-      # Uitvoeren van het single-asset script uit je repository
+      # Stap 1: Uitvoeren van het single-asset ML script
       - name: Run US500 Anomaly Detection ML Engine
         run: python Strategies/strategy_anomaly_single.py
 
-      # Sla de gegenereerde bestanden uit de nieuwe resultatenmap op in je repository
-      - name: Push Analysis Artifacts
+      # Stap 2: NIEUW - Uitvoeren van het quantitative backtest script
+      - name: Run Quantitative Strategy Backtest Engine
+        run: python Strategies/backtest_anomaly_single.py
+
+      # Stap 3: Sla alle gegenereerde bestanden (ML resultaten + Backtest resultaten) op in de repo
+      - name: Push Analysis and Backtest Artifacts
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           
-          # AANGEPAST: Voeg de volledige nieuwe resultatenmap toe aan de git-commit
+          # Voeg de volledige resultatenmap toe (bevat nu CSV, grafieken en Markdown rapporten)
           git add Strategies/results/strategy_anomaly_single/
           
           if ! git diff-index --quiet HEAD; then
-            git commit -m "Update US500 anomaly telemetry and chart dashboards in results folder"
+            git commit -m "Update US500 anomaly detection telemetry, strategy backtests, and charts"
             git pull --rebase origin master
             git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           else
