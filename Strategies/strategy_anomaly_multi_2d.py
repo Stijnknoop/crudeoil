@@ -10,8 +10,8 @@ from tqdm import tqdm
 # 🎛️ CENTRAL CONFIGURATION PANEL (PURE LIVE MINUTE-BY-MINUTE SIMULATION)
 # =========================================================================
 DATA_LIMIT = 3000         # Aantal synchrone minuten om te analyseren (bvb. 5000)
-AGGREGATION_MINUTES = 60  # Return window voor de onderlinge relatie
-WINDOW_SIZE = 600         # 4 uur rolling lookback voor de markt-relatie
+AGGREGATION_MINUTES = 30  # Return window voor de onderlinge relatie
+WINDOW_SIZE = 240         # 4 uur rolling lookback voor de markt-relatie
 
 # Output mappen
 OUTPUT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
