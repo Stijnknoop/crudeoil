@@ -28,7 +28,7 @@ jobs:
       # Installeer de libraries die nodig zijn voor ML en visualisatie
       - name: Install dependencies
         run: |
-          pip install pandas scikit-learn matplotlib
+          pip install pandas scikit-learn matplotlib tqdm
 
       # Uitvoeren van de pure 2D Safe-Haven cross correlation engine
       - name: Run Multi-Asset Safe Haven ML Engine
