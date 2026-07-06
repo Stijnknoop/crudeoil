@@ -5,13 +5,15 @@ import matplotlib.pyplot as plt
 from datetime import datetime, time
 
 # =========================================================================
-# 🎛️ CENTRAL CONFIGURATION PANEL (AANPASBARE PARAMETERS)
+# 🎛️ CENTRAL CONFIGURATION PANEL (MOMENTUM BREAKOUT AFSTELLING)
 # =========================================================================
-DATA_LIMIT = 8000         # Moet matchen met de ML engine voor gelijke data-lengte
-VOLATILITY_WINDOW = 15    # Venster voor risicoberekening (standaarddeviatie)
-SL_MULTIPLIER = 2.5       # Ruime Stop Loss ademruimte
-TP_MULTIPLIER = 1.0       # Krappe Take Profit winstneming
-MAX_DURATION = 30         # Maximum trade timeout in minuten
+DATA_LIMIT = 8000          # Gecapt op 8000 datapunten zoals getoond in je matrix
+VOLATILITY_WINDOW = 15     # Venster voor risicoberekening (standaarddeviatie)
+
+# GEOPTIMALISEERD VOOR MOMENTUM: Krappe SL om risico te dempen, ruime TP om trends uit te melken
+SL_MULTIPLIER = 1.0        # Strakke Stop Loss ademruimte 
+TP_MULTIPLIER = 2.5        # Ruime Take Profit winstneming
+MAX_DURATION = 45          # Verlengde trade timeout naar 45 minuten om trends de tijd te geven
 
 # Mappenstructuur
 RESULT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_oil")
@@ -20,7 +22,7 @@ OUTPUT_REPORT = os.path.join(RESULT_DIR, "backtest_report.md")
 OUTPUT_CHART = os.path.join(RESULT_DIR, "backtest_chart.png")
 
 def run_oil_backtest():
-    print(f"🚀 MANTRA Olie Backtest Engine Gestart (Window: {DATA_LIMIT})...")
+    print(f"🚀 MANTRA Olie Momentum Breakout Engine Gestart (Window: {DATA_LIMIT})...")
     if not os.path.exists(INPUT_CSV):
         print(f"❌ Fout: {INPUT_CSV} ontbreekt. Run eerst de ML engine!")
         return
@@ -60,7 +62,7 @@ def run_oil_backtest():
                 position = None
                 continue
 
-            # 2. Time-Stop na 30 minuten
+            # 2. Time-Stop na ingestelde MAX_DURATION
             if (i - entry_idx) >= MAX_DURATION:
                 pnl = (row['close_bid'] - entry_price) if position == 'LONG' else (entry_price - row['close_ask'])
                 trades_log.append({'type': position, 'entry_idx': entry_idx, 'exit_idx': i, 'entry_price': entry_price, 'exit_price': row['close_bid'] if position == 'LONG' else row['close_ask'], 'sl_price': sl_price, 'tp_price': tp_price, 'pnl': pnl, 'reason': "MAX_DURATION_TIMEOUT", 'entry_time': entry_time, 'exit_time': row['time']})
@@ -93,7 +95,7 @@ def run_oil_backtest():
                     position = None
 
         # ---------------------------------------------------------------------
-        # CASE B: GEEN GEOPENDE POSITIE (Check Triggers met Spread-Filter)
+        # CASE B: GEEN GEOPENDE POSITIE (Triggers omgezet naar MOMENTUM BREAKOUT)
         # ---------------------------------------------------------------------
         else:
             if is_inside_hours and row['is_anomaly'] == 1:
@@ -106,21 +108,30 @@ def run_oil_backtest():
                     skipped_trades_count += 1
                     continue
 
+                # 📉 DOWN_SHOCK gedetecteerd -> Neerwaartse druk breekt uit -> Ga SHORT
                 if row['anomaly_type'] == 'DOWN_SHOCK':
-                    position, entry_price, entry_time, entry_idx = 'LONG', row['close_ask'], row['time'], i
-                    sl_price = entry_price - (SL_MULTIPLIER * vol)
-                    tp_price = entry_price + intended_tp_distance
-                elif row['anomaly_type'] == 'UP_SHOCK':
-                    position, entry_price, entry_time, entry_idx = 'SHORT', row['close_bid'], row['time'], i
+                    position = 'SHORT'
+                    entry_price = row['close_bid']  # Shorten op de bid
+                    entry_time = row['time']
+                    entry_idx = i
                     sl_price = entry_price + (SL_MULTIPLIER * vol)
                     tp_price = entry_price - intended_tp_distance
+                    
+                # 📈 UP_SHOCK gedetecteerd -> Opwaartse druk breekt uit -> Ga LONG
+                elif row['anomaly_type'] == 'UP_SHOCK':
+                    position = 'LONG'
+                    entry_price = row['close_ask']  # Kopen op de ask
+                    entry_time = row['time']
+                    entry_idx = i
+                    sl_price = entry_price - (SL_MULTIPLIER * vol)
+                    tp_price = entry_price + intended_tp_distance
 
     # ---------------------------------------------------------------------
     # 📝 RAPPORTAGE EN GRAFIEKEN GENEREREN
     # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
-        f.write("# 📊 MANTRA: OIL_CRUDE Strategy Backtest Performance\n\n")
+        f.write("# 📊 MANTRA: OIL_CRUDE Momentum Breakout Strategy Performance\n\n")
         if len(trades_df) > 0:
             f.write(f"* **Total Executed Trades:** {len(trades_df)}\n")
             f.write(f"* **Trades Skipped by Spread-Filter:** {skipped_trades_count}\n")
@@ -147,14 +158,14 @@ def run_oil_backtest():
         added["TP"], added["SL"] = True, True
         
         if t['type'] == 'LONG':
-            plt.scatter(t['entry_idx'], t['entry_price'], color='green', marker='^', s=100, label='Buy Order (LONG)' if not added["L"] else "", zorder=5)
+            plt.scatter(t['entry_idx'], t['entry_price'], color='green', marker='^', s=100, label='LONG Entry (Trend Buy)' if not added["L"] else "", zorder=5)
             added["L"] = True
         else:
-            plt.scatter(t['entry_idx'], t['entry_price'], color='red', marker='v', s=100, label='Sell Order (SHORT)' if not added["S"] else "", zorder=5)
+            plt.scatter(t['entry_idx'], t['entry_price'], color='red', marker='v', s=100, label='SHORT Entry (Trend Sell)' if not added["S"] else "", zorder=5)
             added["S"] = True
 
     plt.xticks(np.linspace(0, len(df)-1, 8, dtype=int), df['time'].dt.strftime('%m-%d %H:%M').iloc[np.linspace(0, len(df)-1, 8, dtype=int)].values, rotation=25)
-    plt.title(f"MANTRA Oil Execution Node: Asymmetric Bracket Orders (Window: {DATA_LIMIT}m)", fontsize=12, fontweight='bold', loc='left')
+    plt.title(f"MANTRA Oil Execution Node: Momentum Breakout Brackets (Window: {DATA_LIMIT}m)", fontsize=12, fontweight='bold', loc='left')
     plt.grid(True, linestyle=':', alpha=0.4)
     plt.legend(loc="upper left")
     plt.tight_layout()
