@@ -22,7 +22,7 @@ OUTPUT_CHART_ROI = os.path.join(RESULT_DIR, "multi_backtest_chart.png")       # 
 OUTPUT_CHART_EXEC = os.path.join(RESULT_DIR, "multi_execution_chart.png")    # Het gelaagde buy/sell dashboard
 
 def run_multi_backtest():
-    print(f"🚀 MANTRA Arbitrage Convergence Engine Gestart...")
+    print(f"🚀 MANTRA Arbitrage Portfolio Engine Gestart...")
     if not os.path.exists(INPUT_CSV):
         print(f"❌ Fout: {INPUT_CSV} ontbreekt. Run eerst de multi ML engine!")
         return
@@ -59,6 +59,9 @@ def run_multi_backtest():
         is_inside_hours = time(0, 30) <= curr_time <= time(22, 0)
         z_curr = row['z_score']
 
+        # ---------------------------------------------------------------------
+        # CASE A: ER IS EEN ACTIEVE PAIRS TRADE (Check Convergence, SL, Timeout of EOD)
+        # ---------------------------------------------------------------------
         if position is not None:
             converged = False
             if position == 'US500_SHORT_GOLD_LONG' and z_curr <= 0:
@@ -87,7 +90,8 @@ def run_multi_backtest():
                     exit_us500 = row['US500_close_bid']
                     exit_gold = row['GOLD_close_ask']
                 
-                total_pnl_pct = pct_us500 + pct_gold
+                # GECORRIGEERD: Delen door 2 voor het reële rendement over de totale portfolio-inleg
+                total_pnl_pct = (pct_us500 + pct_gold) / 2
                 
                 trades_log.append({
                     'type': position, 'entry_time': entry_time, 'exit_time': row['time'],
@@ -101,6 +105,9 @@ def run_multi_backtest():
                 position = None
                 continue
 
+        # ---------------------------------------------------------------------
+        # CASE B: GEEN OPENDE POSITIE (Wacht op ML Anomaly + Z-Score Extreem)
+        # ---------------------------------------------------------------------
         else:
             if is_inside_hours and row['is_system_anomaly'] == 1:
                 if z_curr >= Z_THRESHOLD:
@@ -117,6 +124,9 @@ def run_multi_backtest():
                     entry_time = row['time']
                     entry_idx = i
 
+    # ---------------------------------------------------------------------
+    # 📝 GECORRIGEERD: LEDGER RAPPORTAGE MET PORTFOLIO ROI METRICS (.MD)
+    # ---------------------------------------------------------------------
     trades_df = pd.DataFrame(trades_log)
     with open(OUTPUT_REPORT, 'w') as f:
         f.write("# 📊 MANTRA: Cross-Asset Statistical Arbitrage Ledger\n\n")
@@ -124,11 +134,12 @@ def run_multi_backtest():
             winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
             f.write(f"* **Total Systemic Trades Executed:** {len(trades_df)}\n")
             f.write(f"* **Arbitrage Win Rate:** {(winning_trades / len(trades_df)) * 100:.2f}%\n")
-            f.write(f"* **Net Combined Strategy Yield:** {trades_df['pnl_pct'].sum():.4f}%\n")
-            f.write(f"* **Average Return per Pair:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
+            f.write(f"* **Net Combined Strategy Yield (Total Capital ROI):** {trades_df['pnl_pct'].sum():.4f}%\n")
+            f.write(f"* **Average Return per Trade Combination:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
             
             f.write("### 📜 Geavanceerd Transactie Ledger (Leg Decomposition)\n")
-            f.write("| # | Entry Time | US500 Pos | Gold Pos | Entry US500 | Exit US500 | PnL US500 | Entry GOLD | Exit GOLD | PnL GOLD | Total PnL | Reason |\n")
+            # Kolomnaam hernoemd naar PnL Trade Combination
+            f.write("| # | Entry Time | US500 Pos | Gold Pos | Entry US500 | Exit US500 | PnL US500 | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Reason |\n")
             f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
             
             for idx, r in trades_df.iterrows():
@@ -144,6 +155,9 @@ def run_multi_backtest():
             f.write("Geen cross-asset arbitrages geactiveerd binnen de huidige parameters.")
 
     if len(trades_df) > 0:
+        # ---------------------------------------------------------------------
+        # 📊 GRAFIEK 1: CUMULATIEVE VERMOGENSKROMME (ROI IN %)
+        # ---------------------------------------------------------------------
         print("📊 Genereren van de Cumulative ROI Curve...")
         plt.figure(figsize=(12, 6))
         plt.plot(range(len(equity_curve)), equity_curve, color='purple', linewidth=2, marker='o', label='Combined Pairs ROI (%)')
@@ -157,6 +171,9 @@ def run_multi_backtest():
         plt.savefig(OUTPUT_CHART_ROI, dpi=300)
         plt.close()
 
+        # ---------------------------------------------------------------------
+        # 📊 GRAFIEK 2: DUAL-ASSET EXECUTION DASHBOARD
+        # ---------------------------------------------------------------------
         print("📊 Genereren van het gelaagde Execution Dashboard...")
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True)
         
