@@ -12,8 +12,8 @@ OUTPUT_CSV = os.path.join(OUTPUT_DIR, "us500_analyzed_data.csv")
 OUTPUT_PLOT = os.path.join(OUTPUT_DIR, "us500_anomalies_chart.png")
 OUTPUT_REPORT = os.path.join(OUTPUT_DIR, "anomaly_report.md")
 
-AGGREGATION_MINUTES = 15  # Het macro-regime van 15 minutes
-WINDOW_SIZE = 240         # Rolling training window van 4 uur
+AGGREGATION_MINUTES = 30  # Het macro-regime van 15 minutes
+WINDOW_SIZE = 300         # Rolling training window van 4 uur
 
 def detect_us500_anomalies():
     print(f"🧠 ML Engine gestart voor data uit map: {INPUT_FOLDER}...")
@@ -52,7 +52,7 @@ def detect_us500_anomalies():
         train_slice = market_features[i - WINDOW_SIZE : i]
         current_sample = market_features[i].reshape(1, -1)
         
-        rolling_model = IsolationForest(contamination=0.01, random_state=42, n_estimators=50, n_jobs=-1)
+        rolling_model = IsolationForest(contamination=0.005, random_state=42, n_estimators=50, n_jobs=-1)
         rolling_model.fit(train_slice)
         
         rolling_scores[i] = rolling_model.decision_function(current_sample)[0]
