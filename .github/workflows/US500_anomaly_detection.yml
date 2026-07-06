@@ -33,7 +33,7 @@ jobs:
 
       # Uitvoeren van het single-asset script (pas het pad aan als je het ergens anders hebt gezet)
       - name: Run US500 Anomaly Detection ML Engine
-        run: python src/anomaly_detection_us500.py
+        run: python Strategies/anomaly_detection_single.py
 
       # Sla de gegenereerde CSV en PNG grafiek direct op in de US500 map van je repo
       - name: Push Analysis Artifacts
