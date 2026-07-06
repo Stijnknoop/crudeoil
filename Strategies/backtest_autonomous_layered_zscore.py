@@ -194,7 +194,7 @@ def run_layered_backtest():
                                 break
 
         # ---------------------------------------------------------------------
-        # 📝 RAPPORTERING PER DAG (.MD LEDGER & GRAFIEKEN)
+        # 📝 RAPPORTERING PER DAG (.MD LEDGER MET CASH EN MULTIPLIER KOLOMMEN)
         # ---------------------------------------------------------------------
         trades_df = pd.DataFrame(trades_log)
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
@@ -214,16 +214,22 @@ def run_layered_backtest():
                 f.write(f"* **Average Yield per Executed Slot:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
                 
                 f.write("### 📜 Session Transaction Ledger (Slot Decomposition)\n")
-                f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Reason |\n")
-                f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+                # 🔥 NIEUW: Toegevoegde kolommen voor Cash PnL (1x) en Cash PnL (10x Leverage)
+                f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |\n")
+                f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
                 
                 for idx, r in trades_df.iterrows():
                     us500_pos = "SHORT" if "SHORT" in r['type'] else "LONG"
                     gold_pos = "LONG" if "SHORT" in r['type'] else "SHORT"
+                    
+                    # Bereken de impact op de cashflow op basis van je 4 kapitaal-slots
+                    cash_pnl_1x = r['pnl_pct'] / 4
+                    cash_pnl_10x = cash_pnl_1x * 10
+                    
                     f.write(f"| **Slot {r['slot']}** | {r['entry_time'].strftime('%H:%M')} | {r['exit_time'].strftime('%H:%M')} | "
                             f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
                             f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
-                            f"**{r['pnl_pct']:.4f}%** | `{r['reason']}` |\n")
+                            f"**{r['pnl_pct']:.4f}%** | {cash_pnl_1x:.4f}% | **{cash_pnl_10x:.4f}%** | `{r['reason']}` |\n")
             else:
                 f.write("### 📭 Session Report\nNo layered arbitrage boundaries were hit within active market hours today.")
 
