@@ -11,13 +11,15 @@ OUTPUT_REPORT = os.path.join(RESULT_DIR, "backtest_report.md")
 OUTPUT_CHART = os.path.join(RESULT_DIR, "backtest_chart.png")
 
 VOLATILITY_WINDOW = 15  # Volatilitetsmeting van de afgelopen 15 minuten
-VOL_MULTIPLIER = 2.0    # SL/TP op 2x de standaarddeviatie
+
+# CRUCIAAL: Verlaagd van 2.0 naar 0.8 voor veel krappere SL/TP brackets
+VOL_MULTIPLIER = 0.8    
 
 def run_backtest():
-    print("🚀 MANTRA Quantitative Backtest Engine Opstarten...")
+    print(f"🚀 MANTRA Backtest Engine: Risico-afstelling ingesteld op {VOL_MULTIPLIER}x Volatilisatie...")
     
     if not os.path.exists(INPUT_CSV):
-        print(f"❌ Fout: Analysebestand {INPUT_CSV} niet gevonden. Run eerst de anomaly engine!")
+        print(f"❌ Fout: Analysebestand {INPUT_CSV} niet gevonden.")
         return
 
     # Load data
@@ -30,7 +32,7 @@ def run_backtest():
     df['rolling_vol'] = df['rolling_vol'].bfill()
 
     # Backtest variabelen
-    position = None      # 'LONG', 'SHORT' of None
+    position = None      
     entry_price = 0.0
     entry_time = None
     entry_idx = 0
@@ -39,8 +41,6 @@ def run_backtest():
     
     trades_log = []
     equity_curve = [0.0]
-
-    print("📊 Simulatie van marktorders start met bid/ask spread en tijdrestricties...")
 
     for i in range(len(df)):
         row = df.iloc[i]
@@ -55,7 +55,6 @@ def run_backtest():
         # CASE A: ER IS EEN ACTIEVE POSITIE (Check SL, TP of Einde Handelsdag)
         # ---------------------------------------------------------------------
         if position is not None:
-            # Tijd is verstreken (> 22:00) -> Geforceerd uitstappen
             if curr_time > end_trade_zone:
                 if position == 'LONG':
                     pnl = row['close_bid'] - entry_price
@@ -121,7 +120,7 @@ def run_backtest():
                     position = None
 
         # ---------------------------------------------------------------------
-        # CASE B: GEEN GEOPENDE POSITIE (Check Triggers binnen handelsuren)
+        # CASE B: GEEN GEOPENDE POSITIE (Check Triggers)
         # ---------------------------------------------------------------------
         else:
             if is_inside_trading_hours and row['is_anomaly'] == 1:
@@ -174,41 +173,34 @@ def run_backtest():
                     f"{r['exit_price']:.2f} | {r['pnl']:.2f} | `{r['reason']}` |\n")
 
     # ---------------------------------------------------------------------
-    # 📊 3️⃣ HIGH-FIDELITY EXECUTION CHART GENEREREN (ZONDER WEEKEND GATEN)
+    # 📊 3️⃣ HIGH-FIDELITY EXECUTION CHART GENEREREN (KRAPPE BRACKETS)
     # ---------------------------------------------------------------------
-    print("📊 Genereren van Execution & SL/TP Target Chart...")
-    
-    # We plotten vanaf de start van de eerste trade (min een kleine buffer) om direct in te zoomen op de actie
+    print("📊 Genereren van Tight Execution Chart...")
     plt.figure(figsize=(15, 8))
     
-    # Baseline plotten tegen de index om gaten te voorkomen
     plt.plot(df.index, df['close_mid'], color='#1f78b4', alpha=0.5, label='US500 Mid Price Baseline', linewidth=1.2)
     
-    # Loop door alle gelogde trades heen en teken de markers en SL/TP brackets
     legend_labels_added = {"LONG_ENTRY": False, "SHORT_ENTRY": False, "TP_LINE": False, "SL_LINE": False}
     
     for t in trades_log:
         e_idx = t['entry_idx']
         x_idx = t['exit_idx']
         
-        # Maak een x-as bereik voor de levensduur van deze specifieke trade
         trade_x_range = np.arange(e_idx, x_idx + 1)
-        
-        # Maak arrays met de vaste SL en TP waarden voor dit tijdsbestek
         tp_series = np.full(len(trade_x_range), t['tp_price'])
         sl_series = np.full(len(trade_x_range), t['sl_price'])
         
-        # 1. Teken de Take Profit Lijn (Goud/Geel dash-dot segment)
+        # Take Profit Lijn
         lbl_tp = 'Take Profit Target' if not legend_labels_added["TP_LINE"] else ""
         plt.plot(trade_x_range, tp_series, color='#ffd700', linestyle='-.', linewidth=1.8, label=lbl_tp)
         legend_labels_added["TP_LINE"] = True
         
-        # 2. Teken de Stop Loss Lijn (Oranje/Rood gestreept segment)
+        # Stop Loss Lijn
         lbl_sl = 'Stop Loss Target' if not legend_labels_added["SL_LINE"] else ""
         plt.plot(trade_x_range, sl_series, color='#ff4500', linestyle='--', linewidth=1.5, label=lbl_sl)
         legend_labels_added["SL_LINE"] = True
         
-        # 3. Plaats de specifieke instap-markers exact op de entry-index
+        # Entry Markers
         if t['type'] == 'LONG':
             lbl_ent = 'Buy Order (LONG Entry)' if not legend_labels_added["LONG_ENTRY"] else ""
             plt.scatter(e_idx, t['entry_price'], color='green', marker='^', s=100, label=lbl_ent, zorder=5)
@@ -218,13 +210,13 @@ def run_backtest():
             plt.scatter(e_idx, t['entry_price'], color='red', marker='v', s=100, label=lbl_ent, zorder=5)
             legend_labels_added["SHORT_ENTRY"] = True
 
-    # Nette as-opmaak met datums behouden
+    # As-opmaak
     num_ticks = 8
     tick_indices = np.linspace(0, len(df) - 1, num_ticks, dtype=int)
     tick_labels = df['time'].dt.strftime('%m-%d %H:%M').iloc[tick_indices].values
     plt.xticks(tick_indices, tick_labels, rotation=25)
     
-    plt.title("MANTRA Strategy Execution Node: US500 Bracket Orders (SL/TP Real-Time Mapping)", fontsize=12, fontweight='bold', loc='left')
+    plt.title("MANTRA Strategy Execution Node: US500 Tight Bracket Orders (SL/TP Real-Time Mapping)", fontsize=12, fontweight='bold', loc='left')
     plt.xlabel("Timeline (Market Open Minutes)", fontsize=10)
     plt.ylabel("Index Price ($)", fontsize=10)
     plt.grid(True, linestyle=':', alpha=0.4)
@@ -233,7 +225,7 @@ def run_backtest():
     plt.tight_layout()
     plt.savefig(OUTPUT_CHART, dpi=300)
     plt.close()
-    print(f"✅ Gecorrigeerde execution-grafiek succesvol opgeslagen op: {OUTPUT_CHART}\n")
+    print(f"✅ Krappere execution-grafiek succesvol opgeslagen op: {OUTPUT_CHART}\n")
 
 if __name__ == "__main__":
     run_backtest()
