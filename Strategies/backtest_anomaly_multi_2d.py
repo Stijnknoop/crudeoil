@@ -10,7 +10,7 @@ from datetime import datetime, time
 DATA_LIMIT = 5000         # Match met je ML engine
 RATIO_LOOKBACK = 240       # 4 uur rolling window om de 'normale' verhouding te bepalen
 Z_THRESHOLD = 1.5          # Vanaf welke Z-score we de elastiek-trade triggeren
-FIXED_TP_PCT = 0.15        # 🔥 NIEUW: Vaste Take Profit in % op de totale combinatie (bvb 0.15%)
+FIXED_TP_PCT = 0.25        # 🔥 NIEUW: Vaste Take Profit in % op de totale combinatie (bvb 0.15%)
 MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
 
 # Mappenstructuur
