@@ -14,7 +14,7 @@ Z_THRESHOLD = 1.5          # Alleen instappen bij extreme elastiek-spanning
 # 🔥 NIEUW: Minimale verwachte winst in % op de totale combinatie om de trade überhaupt te accepteren
 MIN_EXPECTED_WIN_PCT = 0.20  # Instelbaar (bvb. 0.10% netto portfolio opbrengst)
 
-MAX_DURATION = 30         # Parachute: Harde maximale duration timeout in minuten
+MAX_DURATION = 60         # Parachute: Harde maximale duration timeout in minuten
 
 # Mappenstructuur
 RESULT_DIR = os.path.join("Strategies", "results", "strategy_anomaly_multi_2d")
