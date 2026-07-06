@@ -31,9 +31,9 @@ jobs:
         run: |
           pip install pandas scikit-learn matplotlib
 
-      # Uitvoeren van het single-asset script (pas het pad aan als je het ergens anders hebt gezet)
+      # AANGEPAST: Pad verwijst nu naar de exacte naam in je repository
       - name: Run US500 Anomaly Detection ML Engine
-        run: python Strategies/anomaly_detection_single.py
+        run: python Strategies/strategy_anomaly_single.py
 
       # Sla de gegenereerde CSV en PNG grafiek direct op in de US500 map van je repo
       - name: Push Analysis Artifacts
