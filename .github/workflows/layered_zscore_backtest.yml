@@ -1,9 +1,9 @@
 name: MANTRA Autonomous Layered Z-Score Engine
 
 on:
-  push:
-    branches:
-      - main
+  #push:
+  #  branches:
+  #    - main
   workflow_dispatch: # Hiermee kun je de backtest ook handmatig starten via de GitHub website
 
 jobs:
