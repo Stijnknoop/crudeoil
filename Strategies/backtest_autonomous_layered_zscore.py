@@ -22,7 +22,7 @@ SLOT_THRESHOLDS = {
 }
 
 # REGIME FILTERS & RISICOMANAGEMENT
-MAX_MEAN_SLOPE_LIMIT = 0.05  # Maximaal toegestane helling (%) van het 240m gemiddelde (30m delta)
+MAX_MEAN_SLOPE_LIMIT = 0.08  # Maximaal toegestane helling (%) van het 240m gemiddelde (30m delta)
 MAX_DWELL_ENTRY_LIMIT = 15   # Maximaal toegestane plaktijd (minuten) buiten |Z|>=2.0 voor NIEUWE entries
 CRITICAL_DWELL_EXIT = 30     # Harde exit als een ACTIEVE TRADE langer dan 60 min vastzit zonder convergentie
 
