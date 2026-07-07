@@ -1,6 +1,6 @@
 import os
 import glob
-import shutil  # 🔥 NIEUW: Nodig om mappen rigoureus te kunnen wissen
+import shutil  
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,6 +20,14 @@ SLOT_THRESHOLDS = {
     3: 2.5,
     4: 3
 }
+
+# 🔥 NIEUWE GEAVANCEERDE GEVECHTSPARAMETERS
+MAX_Z_STOP = 3.5             # Harde statistische stop-loss (absolute Z-score)
+FREEZE_DURATION_MINS = 120   # Afkoelperiode in minuten na een harde stop-loss
+MAX_HOLDING_MINS = 180       # Maximale tijdsduur per trade/slot in minuten (Time-stop)
+SLOT_SPACING_MINS = 15       # Minimale tijd tussen het openen van opeenvolgende slots
+SPREAD_VOL_LOOKBACK = 480    # Window om de trend van de spread-volatiliteit te meten
+SPREAD_VOL_MULTIPLIER = 1.3  # Filter drempel voor te hoge spread-volatiliteit (Regime filter)
 
 # Target mappenstructuur voor de schone start
 BASE_RESULTS_DIR = os.path.join("Strategies", "results", "daily_analysis_z_score_strategy")
@@ -66,13 +74,16 @@ def run_layered_backtest():
     df['ratio_mean'] = df['ratio'].rolling(window=RATIO_LOOKBACK).mean()
     df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
     df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
-    df = df.dropna(subset=['z_score']).reset_index(drop=True)
+    
+    # 🔥 NIEUW: Spread Volatiliteits Trend berekenen
+    df['ratio_std_mean'] = df['ratio_std'].rolling(window=SPREAD_VOL_LOOKBACK).mean()
+    df = df.dropna(subset=['z_score', 'ratio_std_mean']).reset_index(drop=True)
     
     # Zorg voor een gegarandeerd chronologische sortering van unieke datums
     df['date_str'] = df['time'].dt.strftime('%Y-%m-%d')
     unique_dates = sorted(df['date_str'].unique())
     
-    # 🔥 NIEUW: Bepaal dynamisch de twee meest recente datums in de dataset
+    # Bepaal dynamisch de twee meest recente datums in de dataset
     latest_date = unique_dates[-1] if len(unique_dates) > 0 else None
     previous_date = unique_dates[-2] if len(unique_dates) > 1 else None
     
@@ -88,11 +99,9 @@ def run_layered_backtest():
         
         if os.path.exists(day_output_dir):
             if is_volatile:
-                # 🔥 COMMANDO WISSELING: Bestaande map van vandaag/gisteren platgooien voor schone hercalculatie
                 print(f"♻️ [Hercalculatie] {target_date} gedetecteerd. Oude map wordt verwijderd en opnieuw berekend...")
                 shutil.rmtree(day_output_dir, ignore_errors=True)
             else:
-                # Oudere datums blijven onaangetast (bespaart kostbare rekentijd)
                 print(f"⏩ [Overslaan] {target_date} is historische data (map blijft ongewijzigd staan).")
                 continue
             
@@ -110,18 +119,40 @@ def run_layered_backtest():
         equity_curve_base = [0.0]
         equity_curve_10x = [0.0]
         
+        # 🔥 NIEUW: State tracking variabelen voor de lopende sessie
+        freeze_until = None
+        last_slot_open_time = None
+        z_prev = None
+        
         # Minute-by-Minute Session Simulation
         for i in range(len(day_df)):
             row = day_df.iloc[i]
             curr_time = row['time'].time()
             z_curr = row['z_score']
             
+            if z_prev is None:
+                z_prev = z_curr # Init voor de eerste minuut van de dag
+
             is_inside_hours = time(4, 0) <= curr_time <= time(22, 0)
             can_open_new = time(4, 0) <= curr_time <= time(20, 0)
             is_forced_close_time = curr_time >= time(22, 0) or i == (len(day_df) - 1)
 
+            # 🔥 NIEUW: Dynamische checks voor filters
+            is_frozen = (freeze_until is not None and row['time'] < freeze_until)
+            is_spread_volatile = row['ratio_std'] > (row['ratio_std_mean'] * SPREAD_VOL_MULTIPLIER)
+            
+            is_spacing_ok = True
+            if last_slot_open_time is not None:
+                if (row['time'] - last_slot_open_time).total_seconds() / 60 < SLOT_SPACING_MINS:
+                    is_spacing_ok = False
+
             if current_regime is not None:
                 hit_reversion = False
+                hit_z_stop = False
+                hit_time_stop = False
+                exit_reason = ""
+                
+                # A. Check Mean Reversion Convergence
                 if current_regime == 'SHORT_PAIR' and z_curr <= 0:
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
@@ -129,8 +160,23 @@ def run_layered_backtest():
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
                 
-                if hit_reversion or is_forced_close_time:
-                    reason = exit_reason if hit_reversion else "FORCED_EOD_CLOSE"
+                # B. 🔥 NIEUW: Harde Z-Score Stop Loss Check (Trend Protectie)
+                if not hit_reversion and abs(z_curr) >= MAX_Z_STOP:
+                    hit_z_stop = True
+                    exit_reason = "HARD_Z_SCORE_STOP"
+                    # Activeer de freeze afkoelperiode voor de rest van de middag
+                    freeze_until = row['time'] + pd.Timedelta(minutes=FREEZE_DURATION_MINS)
+                
+                # C. 🔥 NIEUW: Maximum Holding Time Check (Time-Stop)
+                if not hit_reversion and not hit_z_stop and len(active_slots) > 0:
+                    oldest_entry = min([s['entry_time'] for s in active_slots.values()])
+                    if (row['time'] - oldest_entry).total_seconds() / 60 >= MAX_HOLDING_MINS:
+                        hit_time_stop = True
+                        exit_reason = "MAX_HOLDING_TIME_EXCEEDED"
+                
+                # Afhandeling van Exits
+                if hit_reversion or hit_z_stop or hit_time_stop or is_forced_close_time:
+                    reason = exit_reason if (hit_reversion or hit_z_stop or hit_time_stop) else "FORCED_EOD_CLOSE"
                     
                     for slot_id, slot_data in active_slots.items():
                         if current_regime == 'SHORT_PAIR':
@@ -163,51 +209,65 @@ def run_layered_backtest():
                     active_slots = {}
                     current_regime = None
                     if is_forced_close_time:
+                        z_prev = z_curr
                         continue
 
-                elif can_open_new:
+                # Toevoegen aan bestaand regime (Gelaagde opschaling)
+                elif can_open_new and not is_frozen and not is_spread_volatile and is_spacing_ok:
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     for slot_id, threshold in SLOT_THRESHOLDS.items():
                         if slot_id not in active_slots:
-                            if current_regime == 'SHORT_PAIR' and z_curr >= threshold:
+                            # 🔥 NIEUW: Reversal hook check (Z-score buigt af naar 0)
+                            if current_regime == 'SHORT_PAIR' and z_curr >= threshold and z_curr < z_prev:
                                 if expected_win >= MIN_EXPECTED_WIN_PCT:
                                     active_slots[slot_id] = {
                                         'entry_time': row['time'], 'entry_idx': i,
                                         'entry_us500': row['US500_close_bid'], 'entry_gold': row['GOLD_close_ask']
                                     }
-                            elif current_regime == 'LONG_PAIR' and z_curr <= -threshold:
+                                    last_slot_open_time = row['time']
+                                    break # Maximaal 1 slot trigger per minuut vanwege spacing
+                            elif current_regime == 'LONG_PAIR' and z_curr <= -threshold and z_curr > z_prev:
                                 if expected_win >= MIN_EXPECTED_WIN_PCT:
                                     active_slots[slot_id] = {
                                         'entry_time': row['time'], 'entry_idx': i,
                                         'entry_us500': row['US500_close_ask'], 'entry_gold': row['GOLD_close_bid']
                                     }
+                                    last_slot_open_time = row['time']
+                                    break
             else:
-                if can_open_new:
+                # Eerste Instap Logica (Geen Actief Regime)
+                if can_open_new and not is_frozen and not is_spread_volatile:
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     if expected_win >= MIN_EXPECTED_WIN_PCT:
                         for slot_id, threshold in SLOT_THRESHOLDS.items():
-                            if z_curr >= threshold:
+                            # 🔥 NIEUW: Reversal hook check bij initiële instap
+                            if z_curr >= threshold and z_curr < z_prev:
                                 current_regime = 'SHORT_PAIR'
                                 active_slots[slot_id] = {
                                     'entry_time': row['time'], 'entry_idx': i,
                                     'entry_us500': row['US500_close_bid'], 'entry_gold': row['GOLD_close_ask']
                                 }
+                                last_slot_open_time = row['time']
                                 break
-                            elif z_curr <= -threshold:
+                            elif z_curr <= -threshold and z_curr > z_prev:
                                 current_regime = 'LONG_PAIR'
                                 active_slots[slot_id] = {
                                     'entry_time': row['time'], 'entry_idx': i,
                                     'entry_us500': row['US500_close_ask'], 'entry_gold': row['GOLD_close_bid']
                                 }
+                                last_slot_open_time = row['time']
                                 break
+                                
+            z_prev = z_curr # Update de vergelijkingswaarde voor de volgende minuut
 
         # Rapportering wegschrijven
         trades_df = pd.DataFrame(trades_log)
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
         with open(report_path, 'w') as f:
             f.write(f"# 📊 MANTRA: Layered Z-Score Session Report ({target_date})\n\n")
-            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID`\n")
+            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID WITH RISK CONTROLS`\n")
             f.write(f"* **Configured Slot Thresholds:** Slot 1 (`1.5`), Slot 2 (`2.0`), Slot 3 (`2.5`), Slot 4 (`3.0`)\n")
+            f.write(f"* **Risk Configuration:** Max Z-Stop (`{MAX_Z_STOP}`) | Freeze (`{FREEZE_DURATION_MINS}m`) | Max Hold (`{MAX_HOLDING_MINS}m`)\n")
             f.write(f"* **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
             if len(trades_df) > 0:
                 winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
@@ -264,6 +324,10 @@ def run_layered_backtest():
             for s_id, thresh in SLOT_THRESHOLDS.items():
                 ax3.axhline(thresh, color='red', linestyle='--', alpha=0.3)
                 ax3.axhline(-thresh, color='red', linestyle='--', alpha=0.3)
+            # Voeg visuele weergave van de harde stop-loss toe in de plot
+            ax3.axhline(MAX_Z_STOP, color='darkred', linestyle=':', linewidth=1.5, alpha=0.7)
+            ax3.axhline(-MAX_Z_STOP, color='darkred', linestyle=':', linewidth=1.5, alpha=0.7)
+            
             for t in trades_log:
                 e_idx = t['entry_idx']
                 x_idx = t['exit_idx']
