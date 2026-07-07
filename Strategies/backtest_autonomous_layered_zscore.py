@@ -8,7 +8,7 @@ from datetime import datetime, time
 # =========================================================================
 # 🎛️ CENTRAL CONFIGURATION PANEL (AUTONOMOUS LAYERED Z-SCORE STRATEGY)
 # =========================================================================
-DATA_LIMIT = 10000           # Totaal aantal synchrone minuten om in te laden
+DATA_LIMIT = 5000           # Totaal aantal synchrone minuten om in te laden
 RATIO_LOOKBACK = 240         # 4 uur rolling window voor basis-statistiek
 MIN_EXPECTED_WIN_PCT = 0.10  # Minimale verwachte winst per instap-slot
 
@@ -87,7 +87,10 @@ def run_layered_backtest():
         active_slots = {}   # Volgt welke van de 4 slots open staan
         current_regime = None  # 'SHORT_PAIR' of 'LONG_PAIR'
         trades_log = []
-        equity_curve = [0.0]
+        
+        # Twee parallelle curves bijhouden voor de sessiegrafiek op portefeuilleniveau
+        equity_curve_base = [0.0]
+        equity_curve_10x = [0.0]
         
         # Minute-by-Minute Session Simulation
         for i in range(len(day_df)):
@@ -141,7 +144,11 @@ def run_layered_backtest():
                             'pct_us500': pct_us500, 'pct_gold': pct_gold,
                             'pnl_pct': pnl_comb, 'reason': reason
                         })
-                        equity_curve.append(equity_curve[-1] + pnl_comb)
+                        
+                        # 🔥 GEBOEKT: Beide curves lopen nu op exacte portefeuillegroei (gedeeld door 4 slots)
+                        cash_pnl_1x = pnl_comb / 4
+                        equity_curve_base.append(equity_curve_base[-1] + cash_pnl_1x)
+                        equity_curve_10x.append(equity_curve_10x[-1] + (cash_pnl_1x * 10))
                     
                     # Reset sessie-parameters na volledige exit
                     active_slots = {}
@@ -214,7 +221,6 @@ def run_layered_backtest():
                 f.write(f"* **Average Yield per Executed Slot:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
                 
                 f.write("### 📜 Session Transaction Ledger (Slot Decomposition)\n")
-                # 🔥 NIEUW: Toegevoegde kolommen voor Cash PnL (1x) en Cash PnL (10x Leverage)
                 f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |\n")
                 f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
                 
@@ -222,7 +228,6 @@ def run_layered_backtest():
                     us500_pos = "SHORT" if "SHORT" in r['type'] else "LONG"
                     gold_pos = "LONG" if "SHORT" in r['type'] else "SHORT"
                     
-                    # Bereken de impact op de cashflow op basis van je 4 kapitaal-slots
                     cash_pnl_1x = r['pnl_pct'] / 4
                     cash_pnl_10x = cash_pnl_1x * 10
                     
@@ -234,19 +239,21 @@ def run_layered_backtest():
                 f.write("### 📭 Session Report\nNo layered arbitrage boundaries were hit within active market hours today.")
 
         if len(trades_df) > 0:
-            # Grafiek 1: Cumulative Session growth Curve
-            plt.figure(figsize=(10, 5))
-            plt.plot(range(len(equity_curve)), equity_curve, color='purple', linewidth=2, marker='o', label='Session Layered ROI (%)')
+            # 📊 GRAFIEK 1: NIEUWE ZUIVERE HEFBOOM VERGELIJKING (Portfollio Cash 1x vs 10x)
+            plt.figure(figsize=(11, 5.5))
+            plt.plot(range(len(equity_curve_base)), equity_curve_base, color='purple', linewidth=2, marker='o', label='Cash PnL (1x Base Portfolio) (%)')
+            plt.plot(range(len(equity_curve_10x)), equity_curve_10x, color='#e65c00', linewidth=2, marker='s', linestyle='--', label='Cash PnL (10x Leveraged Portfolio) (%)')
             plt.axhline(0, color='black', linestyle='--', alpha=0.5)
-            plt.title(f"MANTRA Session Curve: {target_date} (Net Return in %)", fontsize=11, fontweight='bold', loc='left')
+            plt.title(f"MANTRA Session Capital Growth Curve: {target_date} (True Portfolio Return)", fontsize=11, fontweight='bold', loc='left')
             plt.xlabel("Sequence of Closed Batches")
-            plt.ylabel("Combined Return (%)")
+            plt.ylabel("Portfolio Cash Return (%)")
             plt.grid(True, linestyle=':', alpha=0.5)
+            plt.legend(loc="upper left", frameon=True, shadow=True)
             plt.tight_layout()
             plt.savefig(os.path.join(day_output_dir, "multi_backtest_chart.png"), dpi=300)
             plt.close()
 
-            # Grafiek 2: 3-Panel Session Execution Dashboard
+            # Grafiek 2: 3-Panel Session Execution Dashboard 
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
             ax1.plot(day_df.index, day_df['US500_price'], color='#1f78b4', alpha=0.5, label='US500 Mid')
             ax2.plot(day_df.index, day_df['GOLD_price'], color='#ffd700', alpha=0.6, label='GOLD Mid')
@@ -264,7 +271,6 @@ def run_layered_backtest():
                 ax2.axvspan(e_idx, x_idx, color='purple', alpha=0.05)
                 ax3.axvspan(e_idx, x_idx, color='purple', alpha=0.05)
                 
-                # Markeer instappen op de prijslijnen
                 if t['type'] == 'LONG_PAIR':
                     ax1.scatter(e_idx, t['entry_us500'], color='green', marker='^', s=80, zorder=5)
                     ax2.scatter(e_idx, t['entry_gold'], color='red', marker='v', s=80, zorder=5)
