@@ -7,11 +7,11 @@
 ### 📈 Session Key Performance Metrics
 * **Total Scaled Batches Executed:** 17
 * **Batch Win Rate:** 88.24%
-* **Pure Combination Trade Yield (Rauw Totaal):** 1.0660%
-* **Net Portfolio Session Yield (1x Base Portfolio):** 0.2665%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **2.6649%**
-* **Average Yield per Executed Slot (1x Base Portfolio):** 0.0157%
-* **Average Yield per Executed Slot (10x Leveraged Portfolio):** 0.1568%
+* **Pure Combination Trade Yield (Rauw Totaal):** 1.1094%
+* **Net Portfolio Session Yield (1x Base Portfolio):** 0.2774%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **2.7736%**
+* **Average Yield per Executed Slot (1x Base Portfolio):** 0.0163%
+* **Average Yield per Executed Slot (10x Leveraged Portfolio):** 0.1632%
 
 ### 📜 Session Transaction Ledger (Slot Decomposition)
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |
@@ -26,10 +26,10 @@
 | **Slot 2** | 14:41 | 15:07 | `SHORT` | 7507.20 | 7506.60 | 0.0080% | `LONG` | 4135.07 | 4148.15 | 0.3163% | **0.1622%** | 0.0405% | **0.4054%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 3** | 14:41 | 15:07 | `SHORT` | 7507.20 | 7506.60 | 0.0080% | `LONG` | 4135.07 | 4148.15 | 0.3163% | **0.1622%** | 0.0405% | **0.4054%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 1** | 15:30 | 15:38 | `SHORT` | 7518.90 | 7503.90 | 0.1995% | `LONG` | 4143.55 | 4146.22 | 0.0644% | **0.1320%** | 0.0330% | **0.3299%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 1** | 15:51 | 18:36 | `SHORT` | 7520.80 | 7533.30 | -0.1662% | `LONG` | 4145.33 | 4148.44 | 0.0750% | **-0.0456%** | -0.0114% | **-0.1140%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 2** | 16:07 | 18:36 | `SHORT` | 7513.70 | 7533.30 | -0.2609% | `LONG` | 4135.33 | 4148.44 | 0.3170% | **0.0281%** | 0.0070% | **0.0702%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 3** | 16:07 | 18:36 | `SHORT` | 7513.70 | 7533.30 | -0.2609% | `LONG` | 4135.33 | 4148.44 | 0.3170% | **0.0281%** | 0.0070% | **0.0702%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 4** | 16:24 | 18:36 | `SHORT` | 7523.70 | 7533.30 | -0.1276% | `LONG` | 4132.89 | 4148.44 | 0.3763% | **0.1243%** | 0.0311% | **0.3108%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 1** | 19:30 | 21:20 | `LONG` | 7532.70 | 7550.20 | 0.2323% | `SHORT` | 4154.90 | 4161.95 | -0.1697% | **0.0313%** | 0.0078% | **0.0783%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 2** | 19:34 | 21:20 | `LONG` | 7531.00 | 7550.20 | 0.2549% | `SHORT` | 4158.13 | 4161.95 | -0.0919% | **0.0815%** | 0.0204% | **0.2038%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 3** | 19:42 | 21:20 | `LONG` | 7525.00 | 7550.20 | 0.3349% | `SHORT` | 4157.54 | 4161.95 | -0.1061% | **0.1144%** | 0.0286% | **0.2860%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 15:51 | 18:37 | `SHORT` | 7520.80 | 7533.10 | -0.1635% | `LONG` | 4145.33 | 4148.87 | 0.0854% | **-0.0391%** | -0.0098% | **-0.0977%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 2** | 16:07 | 18:37 | `SHORT` | 7513.70 | 7533.10 | -0.2582% | `LONG` | 4135.33 | 4148.87 | 0.3274% | **0.0346%** | 0.0087% | **0.0865%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 3** | 16:07 | 18:37 | `SHORT` | 7513.70 | 7533.10 | -0.2582% | `LONG` | 4135.33 | 4148.87 | 0.3274% | **0.0346%** | 0.0087% | **0.0865%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 4** | 16:24 | 18:37 | `SHORT` | 7523.70 | 7533.10 | -0.1249% | `LONG` | 4132.89 | 4148.87 | 0.3867% | **0.1309%** | 0.0327% | **0.3271%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 19:31 | 21:23 | `LONG` | 7533.00 | 7550.30 | 0.2297% | `SHORT` | 4156.85 | 4162.12 | -0.1268% | **0.0514%** | 0.0129% | **0.1286%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 2** | 19:34 | 21:23 | `LONG` | 7531.00 | 7550.30 | 0.2563% | `SHORT` | 4158.13 | 4162.12 | -0.0960% | **0.0802%** | 0.0200% | **0.2004%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 3** | 19:42 | 21:23 | `LONG` | 7525.00 | 7550.30 | 0.3362% | `SHORT` | 4157.54 | 4162.12 | -0.1102% | **0.1130%** | 0.0283% | **0.2826%** | `MEAN_REVERSION_CONVERGENCE` |
