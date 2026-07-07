@@ -1,6 +1,6 @@
 import os
 import glob
-import shutil
+import shutil  # 🔥 NIEUW: Nodig om mappen rigoureus te kunnen wissen
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -14,30 +14,40 @@ RATIO_LOOKBACK = 240         # 4 uur rolling window voor basis-statistiek
 MIN_EXPECTED_WIN_PCT = 0.10  # Minimale verwachte winst per instap-slot
 
 # De 4 onafhankelijke instap-slots met bijbehorende Z-score drempels
-SLOT_THRESHOLDS = {1: 1.5, 2: 2.0, 3: 2.5, 4: 3.0}
+SLOT_THRESHOLDS = {
+    1: 1.5,
+    2: 2.0,
+    3: 2.5,
+    4: 3.0
+}
 
-# 🛡️ INSTITUTIONEEL PORTFOLIO RISICOMANAGEMENT (Berekend op 1x Base Portfolio Cash)
-PORTFOLIO_STOP_LOSS_PCT = -0.25    # Harde stop: grijpt in bij -2.5% op je 10x leveraged account
-TRAIL_ACTIVATION_PCT = 0.15       # Activatie: Schaduw-stop start bij +1.5% op je 10x leveraged account
-TRAIL_DROP_PCT = 0.04             # Winstbeveiliging: Sluit als winst 0.4% daalt vanaf de piek (10x scale)
-
+# Target mappenstructuur voor de schone start
 BASE_RESULTS_DIR = os.path.join("Strategies", "results", "daily_analysis_z_score_strategy")
 
 def load_and_prepare_raw_asset(folder_name):
+    """Laadt de meest recente rauwe database rechtstreeks uit de asset-map."""
     search_pattern = os.path.join(folder_name, "outputs_merged_*.csv")
     files = sorted(glob.glob(search_pattern))
     if not files:
         raise FileNotFoundError(f"❌ Geen rauwe CSV-data gevonden in map: {folder_name}")
+    
     df = pd.read_csv(files[-1])
     df['time'] = pd.to_datetime(df['time'])
     df = df.sort_values('time').reset_index(drop=True)
     df['mid'] = (df['close_bid'] + df['close_ask']) / 2
+    
     return df[['time', 'mid', 'close_bid', 'close_ask']].rename(
-        columns={'mid': f'{folder_name}_price', 'close_bid': f'{folder_name}_close_bid', 'close_ask': f'{folder_name}_close_ask'}
+        columns={
+            'mid': f'{folder_name}_price',
+            'close_bid': f'{folder_name}_close_bid',
+            'close_ask': f'{folder_name}_close_ask'
+        }
     )
 
 def run_layered_backtest():
     print("🚀 MANTRA Autonomous Layered Z-Score Engine Gestart...")
+    
+    # 1. Directe data alignment vanuit de rauwe bronbestanden
     try:
         us500 = load_and_prepare_raw_asset("US500")
         gold = load_and_prepare_raw_asset("GOLD")
@@ -45,41 +55,54 @@ def run_layered_backtest():
         print(f"❌ Data Ingestie Fout: {str(e)}")
         return
 
+    print("🔗 Synchroniseren van de tijdsassen...")
     df = pd.merge(us500, gold, on='time', how='inner').sort_values('time').reset_index(drop=True)
+    
     if len(df) > DATA_LIMIT:
         df = df.tail(DATA_LIMIT).reset_index(drop=True)
 
-    try:
-        df['time_ny'] = df['time'].dt.tz_localize('Europe/Amsterdam', ambiguous='NaT').dt.tz_convert('America/New_York')
-    except:
-        df['time_ny'] = df['time'].dt.tz_localize(None).dt.tz_localize('Europe/Amsterdam').dt.tz_convert('America/New_York')
-
+    # 2. Wiskundige berekeningen (Global rolling window voor continuïteit over de dagen)
     df['ratio'] = df['US500_price'] / df['GOLD_price']
     df['ratio_mean'] = df['ratio'].rolling(window=RATIO_LOOKBACK).mean()
     df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
     df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
     df = df.dropna(subset=['z_score']).reset_index(drop=True)
     
+    # Zorg voor een gegarandeerd chronologische sortering van unieke datums
     df['date_str'] = df['time'].dt.strftime('%Y-%m-%d')
     unique_dates = sorted(df['date_str'].unique())
+    
+    # 🔥 NIEUW: Bepaal dynamisch de twee meest recente datums in de dataset
     latest_date = unique_dates[-1] if len(unique_dates) > 0 else None
     previous_date = unique_dates[-2] if len(unique_dates) > 1 else None
+    
+    print(f"📅 Totaal aantal unieke handelsdagen in dataset: {len(unique_dates)}")
+    print(f"🔄 Volatiele overschrijf-zones gedetecteerd: Laatste ({latest_date}) en Vorige ({previous_date})")
 
+    # 3. Dag-voor-Dag Slimme Overschrijf Loop
     for target_date in unique_dates:
         day_output_dir = os.path.join(BASE_RESULTS_DIR, target_date)
+        
+        # Check of deze datum binnen de herberekenings-zone valt
         is_volatile = (target_date == latest_date or target_date == previous_date)
         
         if os.path.exists(day_output_dir):
             if is_volatile:
+                # 🔥 COMMANDO WISSELING: Bestaande map van vandaag/gisteren platgooien voor schone hercalculatie
+                print(f"♻️ [Hercalculatie] {target_date} gedetecteerd. Oude map wordt verwijderd en opnieuw berekend...")
                 shutil.rmtree(day_output_dir, ignore_errors=True)
             else:
+                # Oudere datums blijven onaangetast (bespaart kostbare rekentijd)
+                print(f"⏩ [Overslaan] {target_date} is historische data (map blijft ongewijzigd staan).")
                 continue
             
         day_df = df[df['date_str'] == target_date].copy().reset_index(drop=True)
         if len(day_df) < 10:  
             continue
             
+        print(f"🔥 [Data Run] Analyse uitvoeren voor handelssessie: {target_date}...")
         os.makedirs(day_output_dir, exist_ok=True)
+
         active_slots = {}   
         current_regime = None  
         trades_log = []
@@ -87,63 +110,24 @@ def run_layered_backtest():
         equity_curve_base = [0.0]
         equity_curve_10x = [0.0]
         
-        # Volgparameters voor de winstbeveiliging (trailing stop)
-        peak_unrealized_pnl = -999.0
-        
+        # Minute-by-Minute Session Simulation
         for i in range(len(day_df)):
             row = day_df.iloc[i]
-            curr_time_nl = row['time'].time()
-            curr_time_ny = row['time_ny'].time()
+            curr_time = row['time'].time()
             z_curr = row['z_score']
             
-            is_inside_hours = time(4, 0) <= curr_time_nl <= time(22, 0)
-            can_open_new = time(4, 0) <= curr_time_nl <= time(20, 0)
-            is_forced_close_time = curr_time_nl >= time(22, 0) or i == (len(day_df) - 1)
-            
-            is_us_open_danger_zone = time(8, 30) <= curr_time_ny <= time(10, 30)
-            if is_us_open_danger_zone:
-                can_open_new = False
+            is_inside_hours = time(4, 0) <= curr_time <= time(22, 0)
+            can_open_new = time(4, 0) <= curr_time <= time(20, 0)
+            is_forced_close_time = curr_time >= time(22, 0) or i == (len(day_df) - 1)
 
-            # 🛑 REALTIME PORTFOLIO PNLEVALUATIE (Risk Management Monitor)
-            total_unrealized_pnl = 0.0
-            if current_regime is not None and len(active_slots) > 0:
-                for s_id, s_data in active_slots.items():
-                    if current_regime == 'SHORT_PAIR':
-                        p_us = ((s_data['entry_us500'] - row['US500_close_ask']) / s_data['entry_us500']) * 100
-                        p_au = ((row['GOLD_close_bid'] - s_data['entry_gold']) / s_data['entry_gold']) * 100
-                    else:
-                        p_us = ((row['US500_close_bid'] - s_data['entry_us500']) / s_data['entry_us500']) * 100
-                        p_au = ((s_data['entry_gold'] - row['GOLD_close_ask']) / s_data['entry_gold']) * 100
-                    total_unrealized_pnl += ((p_us + p_au) / 2) / 4 # Gewogen naar totale portfolio cash (1/4)
-                
-                # Update de hoogst gemeten winstpiek van deze lopende sessie
-                if total_unrealized_pnl > peak_unrealized_pnl:
-                    peak_unrealized_pnl = total_unrealized_pnl
-
-            # -----------------------------------------------------------------
-            # EVALUATIE EN EXIT TRIGGERS
-            # -----------------------------------------------------------------
             if current_regime is not None:
                 hit_reversion = False
-                exit_reason = ""
-                
-                # Trigger 1: Regulier statistisch herstel
                 if current_regime == 'SHORT_PAIR' and z_curr <= 0:
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
                 elif current_regime == 'LONG_PAIR' and z_curr >= 0:
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
-                
-                # Trigger 2: 🔥 NIEUW - Harde Portefeuille Noodrem (Stop-Loss)
-                if total_unrealized_pnl <= PORTFOLIO_STOP_LOSS_PCT:
-                    hit_reversion = True
-                    exit_reason = "PORTFOLIO_HARD_STOP_LOSS"
-                    
-                # Trigger 3: 🔥 NIEUW - Trailing Profit Snatcher (Winsten Beveiligen)
-                elif peak_unrealized_pnl >= TRAIL_ACTIVATION_PCT and total_unrealized_pnl <= (peak_unrealized_pnl - TRAIL_DROP_PCT):
-                    hit_reversion = True
-                    exit_reason = "PORTFOLIO_TRAILING_TAKE_PROFIT"
                 
                 if hit_reversion or is_forced_close_time:
                     reason = exit_reason if hit_reversion else "FORCED_EOD_CLOSE"
@@ -178,11 +162,10 @@ def run_layered_backtest():
                     
                     active_slots = {}
                     current_regime = None
-                    peak_unrealized_pnl = -999.0 # Reset piek voor de volgende ronde
                     if is_forced_close_time:
                         continue
 
-                elif can_open_new: # Grid mag nu weer vrijuit ademen en slots laden!
+                elif can_open_new:
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     for slot_id, threshold in SLOT_THRESHOLDS.items():
                         if slot_id not in active_slots:
@@ -218,15 +201,14 @@ def run_layered_backtest():
                                 }
                                 break
 
-        # Ledger genereren
+        # Rapportering wegschrijven
         trades_df = pd.DataFrame(trades_log)
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
         with open(report_path, 'w') as f:
             f.write(f"# 📊 MANTRA: Layered Z-Score Session Report ({target_date})\n\n")
             f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID`\n")
             f.write(f"* **Configured Slot Thresholds:** Slot 1 (`1.5`), Slot 2 (`2.0`), Slot 3 (`2.5`), Slot 4 (`3.0`)\n")
-            f.write(f"* **Risk Regulators:** Trailing Take Profit active ({TRAIL_ACTIVATION_PCT}%) | Emergency Portfolio Stop active ({PORTFOLIO_STOP_LOSS_PCT}%)\n")
-            f.write(f"* **Operational Windows (NL):** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
+            f.write(f"* **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
             if len(trades_df) > 0:
                 winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
                 total_comb_pnl = trades_df['pnl_pct'].sum()
@@ -309,7 +291,7 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_execution_chart.png"), dpi=300)
             plt.close()
             
-        print(f"✅ Handelsdag {target_date} berekend met herstelde grid-capaciteit en actieve trailing-uitstappen.")
+        print(f"✅ Handelsdag {target_date} succesvol berekend.")
 
 if __name__ == '__main__':
     run_layered_backtest()
