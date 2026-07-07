@@ -1,11 +1,11 @@
 # 📊 MANTRA: Pure Z-Score Statistical Arbitrage Ledger
 
 * **Strategy Mode:** `PURE CLASSICAL Z-SCORE` (AI Anomalies Ignored)
-* **Total Systemic Trades Executed:** 10
-* **Trades Skipped by Expected-Win Filter:** 3
-* **Arbitrage Win Rate:** 70.00%
-* **Net Combined Strategy Yield (Total Capital ROI):** 0.4162%
-* **Average Return per Trade Combination:** 0.0416%
+* **Total Systemic Trades Executed:** 13
+* **Trades Skipped by Expected-Win Filter:** 15
+* **Arbitrage Win Rate:** 61.54%
+* **Net Combined Strategy Yield (Total Capital ROI):** 0.3341%
+* **Average Return per Trade Combination:** 0.0257%
 
 ### 📜 Geavanceerd Transactie Ledger (Leg Decomposition)
 | # | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Reason |
@@ -20,3 +20,6 @@
 | 8 | 07-06 16:07 | 07-06 16:37 | `SHORT` | 7513.70 | 7523.90 | -0.1358% | `LONG` | 4135.33 | 4140.99 | 0.1369% | **0.0006%** | `MAX_DURATION_TIMEOUT` |
 | 9 | 07-06 16:44 | 07-06 17:14 | `SHORT` | 7523.90 | 7528.60 | -0.0625% | `LONG` | 4130.39 | 4139.63 | 0.2237% | **0.0806%** | `MAX_DURATION_TIMEOUT` |
 | 10 | 07-06 19:39 | 07-06 20:09 | `LONG` | 7530.90 | 7537.10 | 0.0823% | `SHORT` | 4158.52 | 4156.56 | 0.0471% | **0.0647%** | `MAX_DURATION_TIMEOUT` |
+| 11 | 07-07 02:43 | 07-07 03:13 | `SHORT` | 7536.10 | 7535.80 | 0.0040% | `LONG` | 4150.07 | 4141.11 | -0.2159% | **-0.1060%** | `MAX_DURATION_TIMEOUT` |
+| 12 | 07-07 03:14 | 07-07 03:44 | `SHORT` | 7534.70 | 7536.40 | -0.0226% | `LONG` | 4141.89 | 4142.00 | 0.0027% | **-0.0100%** | `MAX_DURATION_TIMEOUT` |
+| 13 | 07-07 07:33 | 07-07 08:03 | `SHORT` | 7518.80 | 7523.00 | -0.0559% | `LONG` | 4121.50 | 4126.59 | 0.1235% | **0.0338%** | `MAX_DURATION_TIMEOUT` |
