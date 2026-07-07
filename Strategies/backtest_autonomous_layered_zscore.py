@@ -145,7 +145,6 @@ def run_layered_backtest():
                             'pnl_pct': pnl_comb, 'reason': reason
                         })
                         
-                        # 🔥 GEBOEKT: Beide curves lopen nu op exacte portefeuillegroei (gedeeld door 4 slots)
                         cash_pnl_1x = pnl_comb / 4
                         equity_curve_base.append(equity_curve_base[-1] + cash_pnl_1x)
                         equity_curve_10x.append(equity_curve_10x[-1] + (cash_pnl_1x * 10))
@@ -201,7 +200,7 @@ def run_layered_backtest():
                                 break
 
         # ---------------------------------------------------------------------
-        # 📝 RAPPORTERING PER DAG (.MD LEDGER MET CASH EN MULTIPLIER KOLOMMEN)
+        # 📝 RAPPORTERING PER DAG (GEOPTIMALISEERDE METRICS MET EN ZONDER HEFBOOM)
         # ---------------------------------------------------------------------
         trades_df = pd.DataFrame(trades_log)
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
@@ -214,11 +213,26 @@ def run_layered_backtest():
             
             if len(trades_df) > 0:
                 winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
+                
+                # Wiskundige variabelen splitsen voor de weergave
+                total_comb_pnl = trades_df['pnl_pct'].sum()
+                avg_comb_pnl = trades_df['pnl_pct'].mean()
+                
+                net_portfolio_1x = total_comb_pnl / 4
+                net_portfolio_10x = net_portfolio_1x * 10
+                
+                avg_slot_1x = avg_comb_pnl / 4
+                avg_slot_10x = avg_slot_1x * 10
+                
                 f.write(f"### 📈 Session Key Performance Metrics\n")
                 f.write(f"* **Total Scaled Batches Executed:** {len(trades_df)}\n")
                 f.write(f"* **Batch Win Rate:** {(winning_trades / len(trades_df)) * 100:.2f}%\n")
-                f.write(f"* **Net Session Yield (Total Capital ROI):** {trades_df['pnl_pct'].sum():.4f}%\n")
-                f.write(f"* **Average Yield per Executed Slot:** {trades_df['pnl_pct'].mean():.4f}%\n\n")
+                f.write(f"* **Pure Combination Trade Yield (Rauw Totaal):** {total_comb_pnl:.4f}%\n")
+                # 🔥 VERBETERD: Volledige uitsplitsing van Portfolio rendementen en Slot opbrengsten
+                f.write(f"* **Net Portfolio Session Yield (1x Base Portfolio):** {net_portfolio_1x:.4f}%\n")
+                f.write(f"* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **{net_portfolio_10x:.4f}%**\n")
+                f.write(f"* **Average Yield per Executed Slot (1x Base Portfolio):** {avg_slot_1x:.4f}%\n")
+                f.write(f"* **Average Yield per Executed Slot (10x Leveraged Portfolio):** {avg_slot_10x:.4f}%\n\n")
                 
                 f.write("### 📜 Session Transaction Ledger (Slot Decomposition)\n")
                 f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |\n")
@@ -239,7 +253,7 @@ def run_layered_backtest():
                 f.write("### 📭 Session Report\nNo layered arbitrage boundaries were hit within active market hours today.")
 
         if len(trades_df) > 0:
-            # 📊 GRAFIEK 1: NIEUWE ZUIVERE HEFBOOM VERGELIJKING (Portfollio Cash 1x vs 10x)
+            # 📊 GRAFIEK 1: NIEUWE ZUIVERE HEFBOOM VERGELIJKING (Portfollio Cash 1x vs 10x) - Match met image_1676a9.jpg
             plt.figure(figsize=(11, 5.5))
             plt.plot(range(len(equity_curve_base)), equity_curve_base, color='purple', linewidth=2, marker='o', label='Cash PnL (1x Base Portfolio) (%)')
             plt.plot(range(len(equity_curve_10x)), equity_curve_10x, color='#e65c00', linewidth=2, marker='s', linestyle='--', label='Cash PnL (10x Leveraged Portfolio) (%)')
@@ -297,7 +311,7 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_execution_chart.png"), dpi=300)
             plt.close()
             
-        print(f"✅ Sessie {target_date} succesvol verwerkt en opgeslagen.")
+        print(f"✅ Sessie {target_date} verwerkt met vernieuwde ledger-logica.")
 
 if __name__ == '__main__':
     run_layered_backtest()
