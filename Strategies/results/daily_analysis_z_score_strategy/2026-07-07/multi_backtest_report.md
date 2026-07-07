@@ -5,13 +5,13 @@
 * **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`
 
 ### 📈 Session Key Performance Metrics
-* **Total Scaled Batches Executed:** 6
+* **Total Scaled Batches Executed:** 8
 * **Batch Win Rate:** 100.00%
-* **Pure Combination Trade Yield (Rauw Totaal):** 0.4343%
-* **Net Portfolio Session Yield (1x Base Portfolio):** 0.1086%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **1.0858%**
-* **Average Yield per Executed Slot (1x Base Portfolio):** 0.0181%
-* **Average Yield per Executed Slot (10x Leveraged Portfolio):** 0.1810%
+* **Pure Combination Trade Yield (Rauw Totaal):** 0.7186%
+* **Net Portfolio Session Yield (1x Base Portfolio):** 0.1797%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **1.7965%**
+* **Average Yield per Executed Slot (1x Base Portfolio):** 0.0225%
+* **Average Yield per Executed Slot (10x Leveraged Portfolio):** 0.2246%
 
 ### 📜 Session Transaction Ledger (Slot Decomposition)
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |
@@ -21,4 +21,6 @@
 | **Slot 2** | 07:38 | 08:33 | `SHORT` | 7519.70 | 7521.00 | -0.0173% | `LONG` | 4122.27 | 4129.17 | 0.1674% | **0.0750%** | 0.0188% | **0.1876%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 3** | 07:38 | 08:33 | `SHORT` | 7519.70 | 7521.00 | -0.0173% | `LONG` | 4122.27 | 4129.17 | 0.1674% | **0.0750%** | 0.0188% | **0.1876%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 4** | 07:39 | 08:33 | `SHORT` | 7520.60 | 7521.00 | -0.0053% | `LONG` | 4120.30 | 4129.17 | 0.2153% | **0.1050%** | 0.0262% | **0.2624%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 1** | 10:53 | 11:19 | `SHORT` | 7528.70 | 7532.30 | -0.0478% | `LONG` | 4122.39 | 4129.00 | 0.1603% | **0.0563%** | 0.0141% | **0.1407%** | `FORCED_EOD_CLOSE` |
+| **Slot 1** | 10:53 | 11:35 | `SHORT` | 7528.70 | 7529.00 | -0.0040% | `LONG` | 4122.39 | 4131.19 | 0.2135% | **0.1047%** | 0.0262% | **0.2619%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 2** | 11:28 | 11:35 | `SHORT` | 7530.50 | 7529.00 | 0.0199% | `LONG` | 4122.29 | 4131.19 | 0.2159% | **0.1179%** | 0.0295% | **0.2948%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 3** | 11:28 | 11:35 | `SHORT` | 7530.50 | 7529.00 | 0.0199% | `LONG` | 4122.29 | 4131.19 | 0.2159% | **0.1179%** | 0.0295% | **0.2948%** | `MEAN_REVERSION_CONVERGENCE` |
