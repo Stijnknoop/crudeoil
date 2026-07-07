@@ -1,6 +1,6 @@
 import os
 import glob
-import shutil  # 🔥 NIEUW: Nodig om mappen rigoureus te kunnen wissen
+import shutil
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -61,39 +61,38 @@ def run_layered_backtest():
     if len(df) > DATA_LIMIT:
         df = df.tail(DATA_LIMIT).reset_index(drop=True)
 
-    # 2. Wiskundige berekeningen (Global rolling window voor continuïteit over de dagen)
+    # 🗺️ TIMING ARCHITECTUUR: Converteer de Europese data-tijd naar New York Tijd (EST/EDT)
+    # Dit vangt automatisch de afwijkende zomer-/wintertijd weken tussen NL en de US op.
+    print("🇺🇸 Omrekenen van handelstijden naar New York Eastern Time...")
+    try:
+        df['time_ny'] = df['time'].dt.tz_localize('Europe/Amsterdam', ambiguous='NaT').dt.tz_convert('America/New_York')
+    except:
+        df['time_ny'] = df['time'].dt.tz_localize(None).dt.tz_localize('Europe/Amsterdam').dt.tz_convert('America/New_York')
+
+    # 2. Wiskundige berekeningen
     df['ratio'] = df['US500_price'] / df['GOLD_price']
     df['ratio_mean'] = df['ratio'].rolling(window=RATIO_LOOKBACK).mean()
     df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
     df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
     df = df.dropna(subset=['z_score']).reset_index(drop=True)
     
-    # Zorg voor een gegarandeerd chronologische sortering van unieke datums
     df['date_str'] = df['time'].dt.strftime('%Y-%m-%d')
     unique_dates = sorted(df['date_str'].unique())
     
-    # 🔥 NIEUW: Bepaal dynamisch de twee meest recente datums in de dataset
     latest_date = unique_dates[-1] if len(unique_dates) > 0 else None
     previous_date = unique_dates[-2] if len(unique_dates) > 1 else None
     
     print(f"📅 Totaal aantal unieke handelsdagen in dataset: {len(unique_dates)}")
-    print(f"🔄 Volatiele overschrijf-zones gedetecteerd: Laatste ({latest_date}) en Vorige ({previous_date})")
 
     # 3. Dag-voor-Dag Slimme Overschrijf Loop
     for target_date in unique_dates:
         day_output_dir = os.path.join(BASE_RESULTS_DIR, target_date)
-        
-        # Check of deze datum binnen de herberekenings-zone valt
         is_volatile = (target_date == latest_date or target_date == previous_date)
         
         if os.path.exists(day_output_dir):
             if is_volatile:
-                # 🔥 COMMANDO WISSELING: Bestaande map van vandaag/gisteren platgooien voor schone hercalculatie
-                print(f"♻️ [Hercalculatie] {target_date} gedetecteerd. Oude map wordt verwijderd en opnieuw berekend...")
                 shutil.rmtree(day_output_dir, ignore_errors=True)
             else:
-                # Oudere datums blijven onaangetast (bespaart kostbare rekentijd)
-                print(f"⏩ [Overslaan] {target_date} is historische data (map blijft ongewijzigd staan).")
                 continue
             
         day_df = df[df['date_str'] == target_date].copy().reset_index(drop=True)
@@ -113,13 +112,43 @@ def run_layered_backtest():
         # Minute-by-Minute Session Simulation
         for i in range(len(day_df)):
             row = day_df.iloc[i]
-            curr_time = row['time'].time()
+            curr_time_nl = row['time'].time()
+            curr_time_ny = row['time_ny'].time() # De Amerikaanse tijd van deze minuut
             z_curr = row['z_score']
             
-            is_inside_hours = time(4, 0) <= curr_time <= time(22, 0)
-            can_open_new = time(4, 0) <= curr_time <= time(20, 0)
-            is_forced_close_time = curr_time >= time(22, 0) or i == (len(day_df) - 1)
+            # 🕰️ TIMING FILTERS
+            # Filter A: Standaard Europese operationele uren (04:00 - 22:00)
+            is_inside_hours = time(4, 0) <= curr_time_nl <= time(22, 0)
+            can_open_new = time(4, 0) <= curr_time_nl <= time(20, 0)
+            is_forced_close_time = curr_time_nl >= time(22, 0) or i == (len(day_df) - 1)
+            
+            # Filter B: 🇺🇸 Het US Open Volatiliteit Filter (Blokkeer 1 uur voor tot 1 uur na US Open)
+            # US Open = 09:30 NY Time -> Blokkeer venster: 08:30 t/m 10:30 NY Time
+            is_us_open_danger_zone = time(8, 30) <= curr_time_ny <= time(10, 30)
+            if is_us_open_danger_zone:
+                can_open_new = False # Geen nieuwe posities of extra slots openen tijdens dit onrustige venster
 
+            # 🛑 UNREALIZED PNL PRE-CHECK (Anti-Martingale Filter)
+            # Bereken de realtime ongerealiseerde tussenstand van alle momenteel openstaande slots samen
+            unrealized_pnl_is_negative = False
+            if current_regime is not None and len(active_slots) > 0:
+                total_unrealized_pnl = 0
+                for s_id, s_data in active_slots.items():
+                    if current_regime == 'SHORT_PAIR':
+                        p_us = ((s_data['entry_us500'] - row['US500_close_ask']) / s_data['entry_us500']) * 100
+                        p_au = ((row['GOLD_close_bid'] - s_data['entry_gold']) / s_data['entry_gold']) * 100
+                    else:
+                        p_us = ((row['US500_close_bid'] - s_data['entry_us500']) / s_data['entry_us500']) * 100
+                        p_au = ((s_data['entry_gold'] - row['GOLD_close_ask']) / s_data['entry_gold']) * 100
+                    total_unrealized_pnl += (p_us + p_au) / 2
+                
+                # Als de lopende mand in de min staat, blokkeren we de toevoeging van extra slots
+                if total_unrealized_pnl < 0:
+                    unrealized_pnl_is_negative = True
+
+            # -----------------------------------------------------------------
+            # EVALUATIE ACTIEVE REGIME (Check Exits, Sluitingen & Opschaling)
+            # -----------------------------------------------------------------
             if current_regime is not None:
                 hit_reversion = False
                 if current_regime == 'SHORT_PAIR' and z_curr <= 0:
@@ -165,8 +194,10 @@ def run_layered_backtest():
                     if is_forced_close_time:
                         continue
 
-                elif can_open_new:
+                # Opschaling checken (Mag nu dus alleen als we óók NIET in de min staan én buiten de US open zone zitten!)
+                elif can_open_new and not unrealized_pnl_is_negative:
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
+                    
                     for slot_id, threshold in SLOT_THRESHOLDS.items():
                         if slot_id not in active_slots:
                             if current_regime == 'SHORT_PAIR' and z_curr >= threshold:
@@ -181,9 +212,14 @@ def run_layered_backtest():
                                         'entry_time': row['time'], 'entry_idx': i,
                                         'entry_us500': row['US500_close_ask'], 'entry_gold': row['GOLD_close_bid']
                                     }
+
+            # -----------------------------------------------------------------
+            # GEEN ACTIEVE POSITIES (Wacht op initiële trigger van Slot 1 t/m 4)
+            # -----------------------------------------------------------------
             else:
                 if can_open_new:
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
+                    
                     if expected_win >= MIN_EXPECTED_WIN_PCT:
                         for slot_id, threshold in SLOT_THRESHOLDS.items():
                             if z_curr >= threshold:
@@ -206,9 +242,10 @@ def run_layered_backtest():
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
         with open(report_path, 'w') as f:
             f.write(f"# 📊 MANTRA: Layered Z-Score Session Report ({target_date})\n\n")
-            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID`\n")
+            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID WITH RISK REGULATORS`\n")
             f.write(f"* **Configured Slot Thresholds:** Slot 1 (`1.5`), Slot 2 (`2.0`), Slot 3 (`2.5`), Slot 4 (`3.0`)\n")
-            f.write(f"* **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
+            f.write(f"* **Operational Guardrails:** Anti-Martingale Negative Block active | US Open Volatility Shield active\n")
+            f.write(f"* **Operational Windows (NL):** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
             if len(trades_df) > 0:
                 winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
                 total_comb_pnl = trades_df['pnl_pct'].sum()
@@ -291,7 +328,7 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_execution_chart.png"), dpi=300)
             plt.close()
             
-        print(f"✅ Handelsdag {target_date} succesvol berekend.")
+        print(f"✅ Handelsdag {target_date} succesvol berekend met risico-filters.")
 
 if __name__ == '__main__':
     run_layered_backtest()
