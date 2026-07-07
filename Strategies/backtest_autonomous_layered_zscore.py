@@ -21,7 +21,8 @@ SLOT_THRESHOLDS = {
     4: 3
 }
 
-# 🔥 NIEUWE GEAVANCEERDE GEVECHTSPARAMETERS
+# RISK & SMOOTHING CONFIGURATION
+Z_SCORE_SMA_WINDOW = 15      # 🔥 OPTIE 2: Window voor de Z-score Moving Average (Ruis-filter)
 MAX_Z_STOP = 3.5             # Harde statistische stop-loss (absolute Z-score)
 FREEZE_DURATION_MINS = 120   # Afkoelperiode in minuten na een harde stop-loss
 MAX_HOLDING_MINS = 180       # Maximale tijdsduur per trade/slot in minuten (Time-stop)
@@ -75,9 +76,11 @@ def run_layered_backtest():
     df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
     df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
     
-    # 🔥 NIEUW: Spread Volatiliteits Trend berekenen
+    # 🔥 NIEUW: 15-minuten Moving Average van de Z-score berekenen tegen de 1m ruis
+    df['z_score_sma'] = df['z_score'].rolling(window=Z_SCORE_SMA_WINDOW).mean()
     df['ratio_std_mean'] = df['ratio_std'].rolling(window=SPREAD_VOL_LOOKBACK).mean()
-    df = df.dropna(subset=['z_score', 'ratio_std_mean']).reset_index(drop=True)
+    
+    df = df.dropna(subset=['z_score', 'z_score_sma', 'ratio_std_mean']).reset_index(drop=True)
     
     # Zorg voor een gegarandeerd chronologische sortering van unieke datums
     df['date_str'] = df['time'].dt.strftime('%Y-%m-%d')
@@ -88,13 +91,11 @@ def run_layered_backtest():
     previous_date = unique_dates[-2] if len(unique_dates) > 1 else None
     
     print(f"📅 Totaal aantal unieke handelsdagen in dataset: {len(unique_dates)}")
-    print(f"🔄 Volatiele overschrijf-zones gedetecteerd: Laatste ({latest_date}) en Vorige ({previous_date})")
 
     # 3. Dag-voor-Dag Slimme Overschrijf Loop
     for target_date in unique_dates:
         day_output_dir = os.path.join(BASE_RESULTS_DIR, target_date)
         
-        # Check of deze datum binnen de herberekenings-zone valt
         is_volatile = (target_date == latest_date or target_date == previous_date)
         
         if os.path.exists(day_output_dir):
@@ -119,25 +120,21 @@ def run_layered_backtest():
         equity_curve_base = [0.0]
         equity_curve_10x = [0.0]
         
-        # 🔥 NIEUW: State tracking variabelen voor de lopende sessie
+        # State tracking variabelen voor de lopende sessie
         freeze_until = None
         last_slot_open_time = None
-        z_prev = None
         
         # Minute-by-Minute Session Simulation
         for i in range(len(day_df)):
             row = day_df.iloc[i]
             curr_time = row['time'].time()
             z_curr = row['z_score']
-            
-            if z_prev is None:
-                z_prev = z_curr # Init voor de eerste minuut van de dag
+            z_sma = row['z_score_sma'] # 🔥 De vloeiende 15-minuten trendlijn
 
             is_inside_hours = time(4, 0) <= curr_time <= time(22, 0)
             can_open_new = time(4, 0) <= curr_time <= time(20, 0)
             is_forced_close_time = curr_time >= time(22, 0) or i == (len(day_df) - 1)
 
-            # 🔥 NIEUW: Dynamische checks voor filters
             is_frozen = (freeze_until is not None and row['time'] < freeze_until)
             is_spread_volatile = row['ratio_std'] > (row['ratio_std_mean'] * SPREAD_VOL_MULTIPLIER)
             
@@ -160,14 +157,13 @@ def run_layered_backtest():
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
                 
-                # B. 🔥 NIEUW: Harde Z-Score Stop Loss Check (Trend Protectie)
+                # B. Harde Z-Score Stop Loss Check (Trend Protectie)
                 if not hit_reversion and abs(z_curr) >= MAX_Z_STOP:
                     hit_z_stop = True
                     exit_reason = "HARD_Z_SCORE_STOP"
-                    # Activeer de freeze afkoelperiode voor de rest van de middag
                     freeze_until = row['time'] + pd.Timedelta(minutes=FREEZE_DURATION_MINS)
                 
-                # C. 🔥 NIEUW: Maximum Holding Time Check (Time-Stop)
+                # C. Maximum Holding Time Check (Time-Stop)
                 if not hit_reversion and not hit_z_stop and len(active_slots) > 0:
                     oldest_entry = min([s['entry_time'] for s in active_slots.values()])
                     if (row['time'] - oldest_entry).total_seconds() / 60 >= MAX_HOLDING_MINS:
@@ -209,24 +205,24 @@ def run_layered_backtest():
                     active_slots = {}
                     current_regime = None
                     if is_forced_close_time:
-                        z_prev = z_curr
                         continue
 
-                # Toevoegen aan bestaand regime (Gelaagde opschaling)
+                # Gelaagde opschaling binnen lopend regime
                 elif can_open_new and not is_frozen and not is_spread_volatile and is_spacing_ok:
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     for slot_id, threshold in SLOT_THRESHOLDS.items():
                         if slot_id not in active_slots:
-                            # 🔥 NIEUW: Reversal hook check (Z-score buigt af naar 0)
-                            if current_regime == 'SHORT_PAIR' and z_curr >= threshold and z_curr < z_prev:
+                            # 🔥 SMA CROSSOVER CHECK: Rauwe score duikt onder de 15m SMA (Reversal bevestiging)
+                            if current_regime == 'SHORT_PAIR' and z_curr >= threshold and z_curr < z_sma:
                                 if expected_win >= MIN_EXPECTED_WIN_PCT:
                                     active_slots[slot_id] = {
                                         'entry_time': row['time'], 'entry_idx': i,
                                         'entry_us500': row['US500_close_bid'], 'entry_gold': row['GOLD_close_ask']
                                     }
                                     last_slot_open_time = row['time']
-                                    break # Maximaal 1 slot trigger per minuut vanwege spacing
-                            elif current_regime == 'LONG_PAIR' and z_curr <= -threshold and z_curr > z_prev:
+                                    break 
+                            # 🔥 SMA CROSSOVER CHECK: Rauwe score kruist boven de 15m SMA (Reversal bevestiging)
+                            elif current_regime == 'LONG_PAIR' and z_curr <= -threshold and z_curr > z_sma:
                                 if expected_win >= MIN_EXPECTED_WIN_PCT:
                                     active_slots[slot_id] = {
                                         'entry_time': row['time'], 'entry_idx': i,
@@ -240,8 +236,8 @@ def run_layered_backtest():
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     if expected_win >= MIN_EXPECTED_WIN_PCT:
                         for slot_id, threshold in SLOT_THRESHOLDS.items():
-                            # 🔥 NIEUW: Reversal hook check bij initiële instap
-                            if z_curr >= threshold and z_curr < z_prev:
+                            # 🔥 SMA CROSSOVER CHECK: Eerste instap op basis van de 15-minuten SMA Kruising
+                            if z_curr >= threshold and z_curr < z_sma:
                                 current_regime = 'SHORT_PAIR'
                                 active_slots[slot_id] = {
                                     'entry_time': row['time'], 'entry_idx': i,
@@ -249,7 +245,7 @@ def run_layered_backtest():
                                 }
                                 last_slot_open_time = row['time']
                                 break
-                            elif z_curr <= -threshold and z_curr > z_prev:
+                            elif z_curr <= -threshold and z_curr > z_sma:
                                 current_regime = 'LONG_PAIR'
                                 active_slots[slot_id] = {
                                     'entry_time': row['time'], 'entry_idx': i,
@@ -257,17 +253,15 @@ def run_layered_backtest():
                                 }
                                 last_slot_open_time = row['time']
                                 break
-                                
-            z_prev = z_curr # Update de vergelijkingswaarde voor de volgende minuut
 
         # Rapportering wegschrijven
         trades_df = pd.DataFrame(trades_log)
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
         with open(report_path, 'w') as f:
             f.write(f"# 📊 MANTRA: Layered Z-Score Session Report ({target_date})\n\n")
-            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID WITH RISK CONTROLS`\n")
+            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID WITH 15M Z-SMA FILTER`\n")
             f.write(f"* **Configured Slot Thresholds:** Slot 1 (`1.5`), Slot 2 (`2.0`), Slot 3 (`2.5`), Slot 4 (`3.0`)\n")
-            f.write(f"* **Risk Configuration:** Max Z-Stop (`{MAX_Z_STOP}`) | Freeze (`{FREEZE_DURATION_MINS}m`) | Max Hold (`{MAX_HOLDING_MINS}m`)\n")
+            f.write(f"* **Filters:** Z-Score Smoothing (`{Z_SCORE_SMA_WINDOW}m SMA`) | Max Z-Stop (`{MAX_Z_STOP}`) | Freeze (`{FREEZE_DURATION_MINS}m`)\n")
             f.write(f"* **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
             if len(trades_df) > 0:
                 winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
@@ -275,30 +269,22 @@ def run_layered_backtest():
                 avg_comb_pnl = trades_df['pnl_pct'].mean()
                 net_portfolio_1x = total_comb_pnl / 4
                 net_portfolio_10x = net_portfolio_1x * 10
-                avg_slot_1x = avg_comb_pnl / 4
-                avg_slot_10x = avg_slot_1x * 10
                 
                 f.write(f"### 📈 Session Key Performance Metrics\n")
                 f.write(f"* **Total Scaled Batches Executed:** {len(trades_df)}\n")
                 f.write(f"* **Batch Win Rate:** {(winning_trades / len(trades_df)) * 100:.2f}%\n")
-                f.write(f"* **Pure Combination Trade Yield (Rauw Totaal):** {total_comb_pnl:.4f}%\n")
-                f.write(f"* **Net Portfolio Session Yield (1x Base Portfolio):** {net_portfolio_1x:.4f}%\n")
-                f.write(f"* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **{net_portfolio_10x:.4f}%**\n")
-                f.write(f"* **Average Yield per Executed Slot (1x Base Portfolio):** {avg_slot_1x:.4f}%\n")
-                f.write(f"* **Average Yield per Executed Slot (10x Leveraged Portfolio):** {avg_slot_10x:.4f}%\n\n")
+                f.write(f"* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **{net_portfolio_10x:.4f}%**\n\n")
                 
                 f.write("### 📜 Session Transaction Ledger (Slot Decomposition)\n")
-                f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |\n")
-                f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+                f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL Trade Combination | Reason |\n")
+                f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
                 for idx, r in trades_df.iterrows():
                     us500_pos = "SHORT" if "SHORT" in r['type'] else "LONG"
                     gold_pos = "LONG" if "SHORT" in r['type'] else "SHORT"
-                    cash_pnl_1x = r['pnl_pct'] / 4
-                    cash_pnl_10x = cash_pnl_1x * 10
                     f.write(f"| **Slot {r['slot']}** | {r['entry_time'].strftime('%H:%M')} | {r['exit_time'].strftime('%H:%M')} | "
-                            f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
-                            f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
-                            f"**{r['pnl_pct']:.4f}%** | {cash_pnl_1x:.4f}% | **{cash_pnl_10x:.4f}%** | `{r['reason']}` |\n")
+                            f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | "
+                            f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | "
+                            f"**{r['pnl_pct']:.4f}%** | `{r['reason']}` |\n")
             else:
                 f.write("### 📭 Session Report\nNo layered arbitrage boundaries were hit within active market hours today.")
 
@@ -319,12 +305,15 @@ def run_layered_backtest():
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
             ax1.plot(day_df.index, day_df['US500_price'], color='#1f78b4', alpha=0.5, label='US500 Mid')
             ax2.plot(day_df.index, day_df['GOLD_price'], color='#ffd700', alpha=0.6, label='GOLD Mid')
-            ax3.plot(day_df.index, day_df['z_score'], color='#6a3d9a', alpha=0.8, label='Z-Score')
+            
+            # Dashboard met de rauwe score én de nieuwe 15m SMA lijn
+            ax3.plot(day_df.index, day_df['z_score'], color='#6a3d9a', alpha=0.4, label='Rauwe Z-Score')
+            ax3.plot(day_df.index, day_df['z_score_sma'], color='#ff7f00', linewidth=1.5, linestyle='-', label='Smooth Z-Score (15m SMA)')
+            
             ax3.axhline(0, color='black', linestyle='-', alpha=0.4)
             for s_id, thresh in SLOT_THRESHOLDS.items():
                 ax3.axhline(thresh, color='red', linestyle='--', alpha=0.3)
                 ax3.axhline(-thresh, color='red', linestyle='--', alpha=0.3)
-            # Voeg visuele weergave van de harde stop-loss toe in de plot
             ax3.axhline(MAX_Z_STOP, color='darkred', linestyle=':', linewidth=1.5, alpha=0.7)
             ax3.axhline(-MAX_Z_STOP, color='darkred', linestyle=':', linewidth=1.5, alpha=0.7)
             
@@ -347,6 +336,8 @@ def run_layered_backtest():
             ax2.grid(True, linestyle=':', alpha=0.3)
             ax3.set_ylabel("Z-Score")
             ax3.grid(True, linestyle=':', alpha=0.3)
+            ax3.legend(loc="upper left")
+            
             num_ticks = 6
             tick_indices = np.linspace(0, len(day_df) - 1, num_ticks, dtype=int)
             plt.xticks(tick_indices, day_df['time'].dt.strftime('%H:%M').iloc[tick_indices].values, rotation=0)
@@ -355,7 +346,7 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_execution_chart.png"), dpi=300)
             plt.close()
             
-        print(f"✅ Handelsdag {target_date} succesvol berekend.")
+        print(f"✅ Handelsdag {target_date} succesvol berekend met 15m Z-SMA Crossover filter.")
 
 if __name__ == '__main__':
     run_layered_backtest()
