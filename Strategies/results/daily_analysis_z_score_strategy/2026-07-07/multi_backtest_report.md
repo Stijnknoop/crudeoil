@@ -5,13 +5,13 @@
 * **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`
 
 ### 📈 Session Key Performance Metrics
-* **Total Scaled Batches Executed:** 12
-* **Batch Win Rate:** 66.67%
-* **Pure Combination Trade Yield (Rauw Totaal):** -0.6782%
-* **Net Portfolio Session Yield (1x Base Portfolio):** -0.1695%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **-1.6955%**
-* **Average Yield per Executed Slot (1x Base Portfolio):** -0.0141%
-* **Average Yield per Executed Slot (10x Leveraged Portfolio):** -0.1413%
+* **Total Scaled Batches Executed:** 15
+* **Batch Win Rate:** 53.33%
+* **Pure Combination Trade Yield (Rauw Totaal):** -0.5197%
+* **Net Portfolio Session Yield (1x Base Portfolio):** -0.1299%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **-1.2992%**
+* **Average Yield per Executed Slot (1x Base Portfolio):** -0.0087%
+* **Average Yield per Executed Slot (10x Leveraged Portfolio):** -0.0866%
 
 ### 📜 Session Transaction Ledger (Slot Decomposition)
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |
@@ -24,7 +24,10 @@
 | **Slot 1** | 10:53 | 11:35 | `SHORT` | 7528.70 | 7529.00 | -0.0040% | `LONG` | 4122.39 | 4131.19 | 0.2135% | **0.1047%** | 0.0262% | **0.2619%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 2** | 11:28 | 11:35 | `SHORT` | 7530.50 | 7529.00 | 0.0199% | `LONG` | 4122.29 | 4131.19 | 0.2159% | **0.1179%** | 0.0295% | **0.2948%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 3** | 11:28 | 11:35 | `SHORT` | 7530.50 | 7529.00 | 0.0199% | `LONG` | 4122.29 | 4131.19 | 0.2159% | **0.1179%** | 0.0295% | **0.2948%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 1** | 13:02 | 17:05 | `LONG` | 7522.60 | 7489.90 | -0.4347% | `SHORT` | 4135.52 | 4150.88 | -0.3714% | **-0.4031%** | -0.1008% | **-1.0076%** | `FORCED_EOD_CLOSE` |
-| **Slot 2** | 13:18 | 17:05 | `LONG` | 7527.40 | 7489.90 | -0.4982% | `SHORT` | 4141.93 | 4150.88 | -0.2161% | **-0.3571%** | -0.0893% | **-0.8928%** | `FORCED_EOD_CLOSE` |
-| **Slot 3** | 13:18 | 17:05 | `LONG` | 7527.40 | 7489.90 | -0.4982% | `SHORT` | 4141.93 | 4150.88 | -0.2161% | **-0.3571%** | -0.0893% | **-0.8928%** | `FORCED_EOD_CLOSE` |
-| **Slot 4** | 13:35 | 17:05 | `LONG` | 7524.50 | 7489.90 | -0.4598% | `SHORT` | 4146.77 | 4150.88 | -0.0991% | **-0.2795%** | -0.0699% | **-0.6987%** | `FORCED_EOD_CLOSE` |
+| **Slot 1** | 13:02 | 17:27 | `LONG` | 7522.60 | 7486.60 | -0.4786% | `SHORT` | 4135.52 | 4143.14 | -0.1843% | **-0.3314%** | -0.0829% | **-0.8285%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 2** | 13:18 | 17:27 | `LONG` | 7527.40 | 7486.60 | -0.5420% | `SHORT` | 4141.93 | 4143.14 | -0.0292% | **-0.2856%** | -0.0714% | **-0.7140%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 3** | 13:18 | 17:27 | `LONG` | 7527.40 | 7486.60 | -0.5420% | `SHORT` | 4141.93 | 4143.14 | -0.0292% | **-0.2856%** | -0.0714% | **-0.7140%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 4** | 13:35 | 17:27 | `LONG` | 7524.50 | 7486.60 | -0.5037% | `SHORT` | 4146.77 | 4143.14 | 0.0875% | **-0.2081%** | -0.0520% | **-0.5202%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 17:51 | 18:35 | `SHORT` | 7496.60 | 7513.00 | -0.2188% | `LONG` | 4141.34 | 4144.21 | 0.0693% | **-0.0747%** | -0.0187% | **-0.1868%** | `FORCED_EOD_CLOSE` |
+| **Slot 2** | 17:54 | 18:35 | `SHORT` | 7496.30 | 7513.00 | -0.2228% | `LONG` | 4138.18 | 4144.21 | 0.1457% | **-0.0385%** | -0.0096% | **-0.0963%** | `FORCED_EOD_CLOSE` |
+| **Slot 3** | 17:58 | 18:35 | `SHORT` | 7499.20 | 7513.00 | -0.1840% | `LONG` | 4137.78 | 4144.21 | 0.1554% | **-0.0143%** | -0.0036% | **-0.0358%** | `FORCED_EOD_CLOSE` |
