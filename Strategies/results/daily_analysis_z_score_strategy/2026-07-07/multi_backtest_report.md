@@ -5,13 +5,13 @@
 * **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`
 
 ### 📈 Session Key Performance Metrics
-* **Total Scaled Batches Executed:** 8
+* **Total Scaled Batches Executed:** 9
 * **Batch Win Rate:** 100.00%
-* **Pure Combination Trade Yield (Rauw Totaal):** 0.7186%
-* **Net Portfolio Session Yield (1x Base Portfolio):** 0.1797%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **1.7965%**
-* **Average Yield per Executed Slot (1x Base Portfolio):** 0.0225%
-* **Average Yield per Executed Slot (10x Leveraged Portfolio):** 0.2246%
+* **Pure Combination Trade Yield (Rauw Totaal):** 0.7506%
+* **Net Portfolio Session Yield (1x Base Portfolio):** 0.1876%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **1.8765%**
+* **Average Yield per Executed Slot (1x Base Portfolio):** 0.0208%
+* **Average Yield per Executed Slot (10x Leveraged Portfolio):** 0.2085%
 
 ### 📜 Session Transaction Ledger (Slot Decomposition)
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |
@@ -24,3 +24,4 @@
 | **Slot 1** | 10:53 | 11:35 | `SHORT` | 7528.70 | 7529.00 | -0.0040% | `LONG` | 4122.39 | 4131.19 | 0.2135% | **0.1047%** | 0.0262% | **0.2619%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 2** | 11:28 | 11:35 | `SHORT` | 7530.50 | 7529.00 | 0.0199% | `LONG` | 4122.29 | 4131.19 | 0.2159% | **0.1179%** | 0.0295% | **0.2948%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 3** | 11:28 | 11:35 | `SHORT` | 7530.50 | 7529.00 | 0.0199% | `LONG` | 4122.29 | 4131.19 | 0.2159% | **0.1179%** | 0.0295% | **0.2948%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 13:02 | 13:12 | `LONG` | 7522.60 | 7522.90 | 0.0040% | `SHORT` | 4135.52 | 4133.04 | 0.0600% | **0.0320%** | 0.0080% | **0.0799%** | `FORCED_EOD_CLOSE` |
