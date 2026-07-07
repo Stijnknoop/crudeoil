@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil  # 🔥 NIEUW: Nodig om mappen rigoureus te kunnen wissen
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -67,28 +68,45 @@ def run_layered_backtest():
     df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
     df = df.dropna(subset=['z_score']).reset_index(drop=True)
     
+    # Zorg voor een gegarandeerd chronologische sortering van unieke datums
     df['date_str'] = df['time'].dt.strftime('%Y-%m-%d')
-    unique_dates = df['date_str'].unique()
+    unique_dates = sorted(df['date_str'].unique())
     
-    print(f"📅 Totaal aantal unieke handelsdagen gedetecteerd: {len(unique_dates)}")
+    # 🔥 NIEUW: Bepaal dynamisch de twee meest recente datums in de dataset
+    latest_date = unique_dates[-1] if len(unique_dates) > 0 else None
+    previous_date = unique_dates[-2] if len(unique_dates) > 1 else None
+    
+    print(f"📅 Totaal aantal unieke handelsdagen in dataset: {len(unique_dates)}")
+    print(f"🔄 Volatiele overschrijf-zones gedetecteerd: Laatste ({latest_date}) en Vorige ({previous_date})")
 
-    # 3. Dag-voor-Dag Simulatie Loop
+    # 3. Dag-voor-Dag Slimme Overschrijf Loop
     for target_date in unique_dates:
+        day_output_dir = os.path.join(BASE_RESULTS_DIR, target_date)
+        
+        # Check of deze datum binnen de herberekenings-zone valt
+        is_volatile = (target_date == latest_date or target_date == previous_date)
+        
+        if os.path.exists(day_output_dir):
+            if is_volatile:
+                # 🔥 COMMANDO WISSELING: Bestaande map van vandaag/gisteren platgooien voor schone hercalculatie
+                print(f"♻️ [Hercalculatie] {target_date} gedetecteerd. Oude map wordt verwijderd en opnieuw berekend...")
+                shutil.rmtree(day_output_dir, ignore_errors=True)
+            else:
+                # Oudere datums blijven onaangetast (bespaart kostbare rekentijd)
+                print(f"⏩ [Overslaan] {target_date} is historische data (map blijft ongewijzigd staan).")
+                continue
+            
         day_df = df[df['date_str'] == target_date].copy().reset_index(drop=True)
         if len(day_df) < 10:  
             continue
             
-        print(f"📊 Analyseren van handelssessie: {target_date}...")
-        
-        # Maak de specifieke dagmap aan binnen de resultatenstructuur
-        day_output_dir = os.path.join(BASE_RESULTS_DIR, target_date)
+        print(f"🔥 [Data Run] Analyse uitvoeren voor handelssessie: {target_date}...")
         os.makedirs(day_output_dir, exist_ok=True)
 
-        active_slots = {}   # Volgt welke van de 4 slots open staan
-        current_regime = None  # 'SHORT_PAIR' of 'LONG_PAIR'
+        active_slots = {}   
+        current_regime = None  
         trades_log = []
         
-        # Twee parallelle curves bijhouden voor de sessiegrafiek op portefeuilleniveau
         equity_curve_base = [0.0]
         equity_curve_10x = [0.0]
         
@@ -98,16 +116,11 @@ def run_layered_backtest():
             curr_time = row['time'].time()
             z_curr = row['z_score']
             
-            # Tijdswindows afdwingen volgens specificaties
             is_inside_hours = time(4, 0) <= curr_time <= time(22, 0)
             can_open_new = time(4, 0) <= curr_time <= time(20, 0)
             is_forced_close_time = curr_time >= time(22, 0) or i == (len(day_df) - 1)
 
-            # -----------------------------------------------------------------
-            # EVALUATIE ACTIEVE REGIME (Check Exits, Sluitingen & Opschaling)
-            # -----------------------------------------------------------------
             if current_regime is not None:
-                # Conditie 1: Volledig statistisch herstel bereikt (Z-score tikt de 0 aan/kruist de 0)
                 hit_reversion = False
                 if current_regime == 'SHORT_PAIR' and z_curr <= 0:
                     hit_reversion = True
@@ -116,11 +129,9 @@ def run_layered_backtest():
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
                 
-                # Conditie 2: Harde parachute sluiting aan het einde van de handelsdag (22:00)
                 if hit_reversion or is_forced_close_time:
                     reason = exit_reason if hit_reversion else "FORCED_EOD_CLOSE"
                     
-                    # Sluit alle momenteel actieve slots tegelijkertijd af
                     for slot_id, slot_data in active_slots.items():
                         if current_regime == 'SHORT_PAIR':
                             pct_us500 = ((slot_data['entry_us500'] - row['US500_close_ask']) / slot_data['entry_us500']) * 100
@@ -149,16 +160,13 @@ def run_layered_backtest():
                         equity_curve_base.append(equity_curve_base[-1] + cash_pnl_1x)
                         equity_curve_10x.append(equity_curve_10x[-1] + (cash_pnl_1x * 10))
                     
-                    # Reset sessie-parameters na volledige exit
                     active_slots = {}
                     current_regime = None
                     if is_forced_close_time:
                         continue
 
-                # Conditie 3: Indien nog binnen de openingsuren (< 20:00), check voor verdere opschaling/overlap
                 elif can_open_new:
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
-                    
                     for slot_id, threshold in SLOT_THRESHOLDS.items():
                         if slot_id not in active_slots:
                             if current_regime == 'SHORT_PAIR' and z_curr >= threshold:
@@ -173,16 +181,10 @@ def run_layered_backtest():
                                         'entry_time': row['time'], 'entry_idx': i,
                                         'entry_us500': row['US500_close_ask'], 'entry_gold': row['GOLD_close_bid']
                                     }
-
-            # -----------------------------------------------------------------
-            # GEEN ACTIEVE POSITIES (Wacht op initiële trigger van Slot 1 t/m 4)
-            # -----------------------------------------------------------------
             else:
                 if can_open_new:
                     expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
-                    
                     if expected_win >= MIN_EXPECTED_WIN_PCT:
-                        # Check welk instap-niveau als eerste geraakt wordt
                         for slot_id, threshold in SLOT_THRESHOLDS.items():
                             if z_curr >= threshold:
                                 current_regime = 'SHORT_PAIR'
@@ -199,28 +201,20 @@ def run_layered_backtest():
                                 }
                                 break
 
-        # ---------------------------------------------------------------------
-        # 📝 RAPPORTERING PER DAG (GEOPTIMALISEERDE METRICS MET EN ZONDER HEFBOOM)
-        # ---------------------------------------------------------------------
+        # Rapportering wegschrijven
         trades_df = pd.DataFrame(trades_log)
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
-        
         with open(report_path, 'w') as f:
             f.write(f"# 📊 MANTRA: Layered Z-Score Session Report ({target_date})\n\n")
             f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID`\n")
             f.write(f"* **Configured Slot Thresholds:** Slot 1 (`1.5`), Slot 2 (`2.0`), Slot 3 (`2.5`), Slot 4 (`3.0`)\n")
             f.write(f"* **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
-            
             if len(trades_df) > 0:
                 winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
-                
-                # Wiskundige variabelen splitsen voor de weergave
                 total_comb_pnl = trades_df['pnl_pct'].sum()
                 avg_comb_pnl = trades_df['pnl_pct'].mean()
-                
                 net_portfolio_1x = total_comb_pnl / 4
                 net_portfolio_10x = net_portfolio_1x * 10
-                
                 avg_slot_1x = avg_comb_pnl / 4
                 avg_slot_10x = avg_slot_1x * 10
                 
@@ -228,7 +222,6 @@ def run_layered_backtest():
                 f.write(f"* **Total Scaled Batches Executed:** {len(trades_df)}\n")
                 f.write(f"* **Batch Win Rate:** {(winning_trades / len(trades_df)) * 100:.2f}%\n")
                 f.write(f"* **Pure Combination Trade Yield (Rauw Totaal):** {total_comb_pnl:.4f}%\n")
-                # 🔥 VERBETERD: Volledige uitsplitsing van Portfolio rendementen en Slot opbrengsten
                 f.write(f"* **Net Portfolio Session Yield (1x Base Portfolio):** {net_portfolio_1x:.4f}%\n")
                 f.write(f"* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **{net_portfolio_10x:.4f}%**\n")
                 f.write(f"* **Average Yield per Executed Slot (1x Base Portfolio):** {avg_slot_1x:.4f}%\n")
@@ -237,14 +230,11 @@ def run_layered_backtest():
                 f.write("### 📜 Session Transaction Ledger (Slot Decomposition)\n")
                 f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |\n")
                 f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
-                
                 for idx, r in trades_df.iterrows():
                     us500_pos = "SHORT" if "SHORT" in r['type'] else "LONG"
                     gold_pos = "LONG" if "SHORT" in r['type'] else "SHORT"
-                    
                     cash_pnl_1x = r['pnl_pct'] / 4
                     cash_pnl_10x = cash_pnl_1x * 10
-                    
                     f.write(f"| **Slot {r['slot']}** | {r['entry_time'].strftime('%H:%M')} | {r['exit_time'].strftime('%H:%M')} | "
                             f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
                             f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
@@ -253,7 +243,6 @@ def run_layered_backtest():
                 f.write("### 📭 Session Report\nNo layered arbitrage boundaries were hit within active market hours today.")
 
         if len(trades_df) > 0:
-            # 📊 GRAFIEK 1: NIEUWE ZUIVERE HEFBOOM VERGELIJKING (Portfollio Cash 1x vs 10x) - Match met image_1676a9.jpg
             plt.figure(figsize=(11, 5.5))
             plt.plot(range(len(equity_curve_base)), equity_curve_base, color='purple', linewidth=2, marker='o', label='Cash PnL (1x Base Portfolio) (%)')
             plt.plot(range(len(equity_curve_10x)), equity_curve_10x, color='#e65c00', linewidth=2, marker='s', linestyle='--', label='Cash PnL (10x Leveraged Portfolio) (%)')
@@ -267,51 +256,42 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_backtest_chart.png"), dpi=300)
             plt.close()
 
-            # Grafiek 2: 3-Panel Session Execution Dashboard 
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
             ax1.plot(day_df.index, day_df['US500_price'], color='#1f78b4', alpha=0.5, label='US500 Mid')
             ax2.plot(day_df.index, day_df['GOLD_price'], color='#ffd700', alpha=0.6, label='GOLD Mid')
             ax3.plot(day_df.index, day_df['z_score'], color='#6a3d9a', alpha=0.8, label='Z-Score')
-            
             ax3.axhline(0, color='black', linestyle='-', alpha=0.4)
             for s_id, thresh in SLOT_THRESHOLDS.items():
                 ax3.axhline(thresh, color='red', linestyle='--', alpha=0.3)
                 ax3.axhline(-thresh, color='red', linestyle='--', alpha=0.3)
-            
             for t in trades_log:
                 e_idx = t['entry_idx']
                 x_idx = t['exit_idx']
                 ax1.axvspan(e_idx, x_idx, color='purple', alpha=0.05)
                 ax2.axvspan(e_idx, x_idx, color='purple', alpha=0.05)
                 ax3.axvspan(e_idx, x_idx, color='purple', alpha=0.05)
-                
                 if t['type'] == 'LONG_PAIR':
                     ax1.scatter(e_idx, t['entry_us500'], color='green', marker='^', s=80, zorder=5)
                     ax2.scatter(e_idx, t['entry_gold'], color='red', marker='v', s=80, zorder=5)
                 else:
                     ax1.scatter(e_idx, t['entry_us500'], color='red', marker='v', s=80, zorder=5)
                     ax2.scatter(e_idx, t['entry_gold'], color='green', marker='^', s=80, zorder=5)
-
             ax1.set_ylabel("US500 ($)")
             ax1.grid(True, linestyle=':', alpha=0.3)
             ax1.set_title(f"MANTRA Real-time Session Dashboard: {target_date}", fontsize=12, fontweight='bold', loc='left')
-            
             ax2.set_ylabel("GOLD ($)")
             ax2.grid(True, linestyle=':', alpha=0.3)
-            
             ax3.set_ylabel("Z-Score")
             ax3.grid(True, linestyle=':', alpha=0.3)
-            
             num_ticks = 6
             tick_indices = np.linspace(0, len(day_df) - 1, num_ticks, dtype=int)
             plt.xticks(tick_indices, day_df['time'].dt.strftime('%H:%M').iloc[tick_indices].values, rotation=0)
             plt.xlabel("Timeline (Session Trading Minutes)")
-            
             plt.tight_layout()
             plt.savefig(os.path.join(day_output_dir, "multi_execution_chart.png"), dpi=300)
             plt.close()
             
-        print(f"✅ Sessie {target_date} verwerkt met vernieuwde ledger-logica.")
+        print(f"✅ Handelsdag {target_date} succesvol berekend.")
 
 if __name__ == '__main__':
     run_layered_backtest()
