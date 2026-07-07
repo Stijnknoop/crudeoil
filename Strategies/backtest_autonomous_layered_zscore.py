@@ -1,6 +1,6 @@
 import os
 import glob
-import shutil  # 🔥 Nodig om mappen rigoureus te kunnen wissen
+import shutil
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,6 +20,11 @@ SLOT_THRESHOLDS = {
     3: 2.5,
     4: 3
 }
+
+# 🔥 NIEUW: REGIME FILTERS & RISICOMANAGEMENT
+MAX_MEAN_SLOPE_LIMIT = 0.08  # Maximaal toegestane helling (%) van het 240m gemiddelde (30m delta)
+MAX_DWELL_ENTRY_LIMIT = 30   # Maximaal toegestane plaktijd (minuten) buiten |Z|>=2.0 voor nieuwe entries
+CRITICAL_DWELL_EXIT = 60     # Harde exit als de Z-score meer dan 60 min vastzit op extremen
 
 # Target mappenstructuur voor de schone start
 BASE_RESULTS_DIR = os.path.join("Strategies", "results", "daily_analysis_z_score_strategy")
@@ -67,12 +72,12 @@ def run_layered_backtest():
     df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
     df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
     
-    # 🔥 DIAGNOSTISCHE INDICATOR 1: Helling (Slope) van de Ratio Mean (30m % verandering van de 240m basislijn)
+    # DIAGNOSTISCHE INDICATOR 1: Helling (Slope) van de Ratio Mean (30m % verandering van de 240m basislijn)
     df['mean_slope_30m'] = (df['ratio_mean'] - df['ratio_mean'].shift(30)) / df['ratio_mean'].shift(30) * 100
     
     df = df.dropna(subset=['z_score', 'mean_slope_30m']).reset_index(drop=True)
 
-    # 🔥 DIAGNOSTISCHE INDICATOR 2: Z-Score Dwell Time (Opeenvolgende minuten buiten |Z| >= 2.0)
+    # DIAGNOSTISCHE INDICATOR 2: Z-Score Dwell Time (Opeenvolgende minuten buiten |Z| >= 2.0)
     z_abs = df['z_score'].abs().values
     dwell = np.zeros(len(df))
     for k in range(1, len(df)):
@@ -113,7 +118,6 @@ def run_layered_backtest():
             
         print(f"🔥 [Data Run] Analyse uitvoeren voor handelssessie: {target_date}...")
         
-        # 🔥 DIAGNOSTISCHE PRINTS IN TERMINAL
         max_slope = day_df['mean_slope_30m'].abs().max()
         max_dwell = day_df['z_dwell_time'].max()
         print(f"   📈 [Regime Diagnose] Max Base Mean Slope (30m): {max_slope:.4f}% | Max Z-Score Dwell Time: {max_dwell:.0f} min")
@@ -133,12 +137,20 @@ def run_layered_backtest():
             curr_time = row['time'].time()
             z_curr = row['z_score']
             
+            # 🔥 REGIME CHECKS FASE
+            is_slope_healthy = abs(row['mean_slope_30m']) <= MAX_MEAN_SLOPE_LIMIT
+            is_dwell_healthy = row['z_dwell_time'] < MAX_DWELL_ENTRY_LIMIT
+            
             is_inside_hours = time(4, 0) <= curr_time <= time(22, 0)
-            can_open_new = time(4, 0) <= curr_time <= time(20, 0)
+            # Nieuwe instappen mogen alleen plaatsvinden als het regime 'gezond' is
+            can_open_new = (time(4, 0) <= curr_time <= time(20, 0)) and is_slope_healthy and is_dwell_healthy
             is_forced_close_time = curr_time >= time(22, 0) or i == (len(day_df) - 1)
 
             if current_regime is not None:
                 hit_reversion = False
+                hit_dwell_stop = False
+                exit_reason = ""
+                
                 if current_regime == 'SHORT_PAIR' and z_curr <= 0:
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
@@ -146,8 +158,13 @@ def run_layered_backtest():
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
                 
-                if hit_reversion or is_forced_close_time:
-                    reason = exit_reason if hit_reversion else "FORCED_EOD_CLOSE"
+                # 🔥 CRITICAL DWELL EXIT: sluit actieve posities als de Z-score 60 min vastzit
+                if not hit_reversion and row['z_dwell_time'] >= CRITICAL_DWELL_EXIT:
+                    hit_dwell_stop = True
+                    exit_reason = "CRITICAL_DWELL_TIME_EXCEEDED"
+                
+                if hit_reversion or hit_dwell_stop or is_forced_close_time:
+                    reason = exit_reason if (hit_reversion or hit_dwell_stop) else "FORCED_EOD_CLOSE"
                     
                     for slot_id, slot_data in active_slots.items():
                         if current_regime == 'SHORT_PAIR':
@@ -223,11 +240,11 @@ def run_layered_backtest():
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
         with open(report_path, 'w') as f:
             f.write(f"# 📊 MANTRA: Layered Z-Score Session Report ({target_date})\n\n")
-            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID`\n")
+            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID WITH REGIME FILTERS`\n")
             f.write(f"* **Configured Slot Thresholds:** Slot 1 (`1.5`), Slot 2 (`2.0`), Slot 3 (`2.5`), Slot 4 (`3.0`)\n")
+            f.write(f"* **Regime Control Thresholds:** Max Slope (`±{MAX_MEAN_SLOPE_LIMIT}%`) | Max Entry Dwell (`{MAX_DWELL_ENTRY_LIMIT}m`) | Exit Dwell (`{CRITICAL_DWELL_EXIT}m`)\n")
             f.write(f"* **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
             
-            # 🔥 WEGSCHRIJVEN DIAGNOSE NAAR MD RAPPORT
             f.write(f"### 🔍 Trend vs. Mean-Reversion Regime Indicators\n")
             f.write(f"* **Max Ratio 240m Mean Slope (30m Delta):** `{max_slope:.4f}%`\n")
             f.write(f"* **Max Z-Score Dwell Time (|Z| >= 2.0):** `{max_dwell:.0f} minutes`\n\n")
@@ -279,7 +296,6 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_backtest_chart.png"), dpi=300)
             plt.close()
 
-            # 🔥 DIT IS NU EEN 5-LAAGS REALTIME DASHBOARD
             fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5, 1, figsize=(16, 18), sharex=True)
             
             # 1. US500
@@ -302,22 +318,23 @@ def run_layered_backtest():
             ax3.set_ylabel("Z-Score")
             ax3.grid(True, linestyle=':', alpha=0.3)
 
-            # 4. 🔥 HELLING VAN DE RATIO MEAN (30m % Delta)
+            # 4. HELLING VAN DE RATIO MEAN MET DREMPELLIJNEN
             ax4.plot(day_df.index, day_df['mean_slope_30m'], color='#e31a1c', linewidth=1.5, label='240m Mean Slope (30m % Change)')
             ax4.axhline(0, color='black', linestyle='-', alpha=0.5)
+            ax4.axhline(MAX_MEAN_SLOPE_LIMIT, color='red', linestyle='--', alpha=0.7, label=f'Healthy Bound (+{MAX_MEAN_SLOPE_LIMIT}%)')
+            ax4.axhline(-MAX_MEAN_SLOPE_LIMIT, color='red', linestyle='--', alpha=0.7, label=f'Healthy Bound (-{MAX_MEAN_SLOPE_LIMIT}%)')
             ax4.set_ylabel("Slope (%)")
             ax4.grid(True, linestyle=':', alpha=0.3)
             ax4.legend(loc="upper left")
 
-            # 5. 🔥 Z-SCORE DWELL TIME (Plaktijd in minuten buiten |2.0|)
+            # 5. Z-SCORE DWELL TIME MET DREMPELLIJNEN
             ax5.plot(day_df.index, day_df['z_dwell_time'], color='#33a02c', linewidth=1.5, label='Z-Score Dwell Time (|Z| >= 2.0)')
-            ax5.axhline(30, color='orange', linestyle='--', alpha=0.6, label='Warning (30m)')
-            ax5.axhline(60, color='red', linestyle='--', alpha=0.6, label='Critical (60m)')
+            ax5.axhline(MAX_DWELL_ENTRY_LIMIT, color='orange', linestyle='--', alpha=0.8, label=f'Entry Block ({MAX_DWELL_ENTRY_LIMIT}m)')
+            ax5.axhline(CRITICAL_DWELL_EXIT, color='red', linestyle='--', alpha=0.8, label=f'Hard Exit ({CRITICAL_DWELL_EXIT}m)')
             ax5.set_ylabel("Minutes")
             ax5.grid(True, linestyle=':', alpha=0.3)
             ax5.legend(loc="upper left")
 
-            # Trade shading doortrekken over alle 5 de subplots
             for t in trades_log:
                 e_idx = t['entry_idx']
                 x_idx = t['exit_idx']
@@ -339,7 +356,7 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_execution_chart.png"), dpi=300)
             plt.close()
             
-        print(f"✅ Handelsdag {target_date} succesvol berekend met Regime Diagnostiek.")
+        print(f"✅ Handelsdag {target_date} succesvol berekend met Regime Filters.")
 
 if __name__ == '__main__':
     run_layered_backtest()
