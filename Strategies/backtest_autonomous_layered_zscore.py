@@ -10,15 +10,15 @@ from datetime import datetime, time
 # 🎛️ CENTRAL CONFIGURATION PANEL (AUTONOMOUS LAYERED Z-SCORE STRATEGY)
 # =========================================================================
 DATA_LIMIT = 5000           # Totaal aantal synchrone minuten om in te laden
-RATIO_LOOKBACK = 480         # 4 uur rolling window voor basis-statistiek
+RATIO_LOOKBACK = 240         # 4 uur rolling window voor basis-statistiek
 MIN_EXPECTED_WIN_PCT = 0.20  # Minimale verwachte winst per instap-slot
 
 # De 4 onafhankelijke instap-slots met bijbehorende Z-score drempels
 SLOT_THRESHOLDS = {
-    1: 1.5,
+    1: 2.0,
     2: 2.0,
-    3: 2.5,
-    4: 3.0
+    3: 3.0,
+    4: 3.5
 }
 
 # Target mappenstructuur voor de schone start
