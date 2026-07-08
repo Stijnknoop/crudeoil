@@ -24,7 +24,7 @@ SLOT_THRESHOLDS = {
 # JOUW GEOPTIMALISEERDE RISICOMANAGEMENT PARAMETERS
 MAX_DWELL_ENTRY_LIMIT = 10   # Maximaal toegestane plaktijd (minuten) buiten |Z|>=2.0 voor NIEUWE entries
 CRITICAL_DWELL_EXIT = 30     # Harde cluster-exit na 30 minuten holding time zonder convergentie
-BE_PROTECTION_Z = 1.0        # 🔥 NIEUW: Z-score grens waarna de Break-Even bescherming wordt geactiveerd
+BE_PROTECTION_Z = 0.8    # 🔥 NIEUW: Z-score grens waarna de Break-Even bescherming wordt geactiveerd
 
 # Target mappenstructuur voor de schone start
 BASE_RESULTS_DIR = os.path.join("Strategies", "results", "daily_analysis_z_score_strategy")
