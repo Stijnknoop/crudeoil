@@ -10,7 +10,7 @@ from datetime import datetime, time
 # 🎛️ CENTRAL CONFIGURATION PANEL (AUTONOMOUS LAYERED Z-SCORE STRATEGY)
 # =========================================================================
 DATA_LIMIT = 50000           # Totaal aantal synchrone minuten om in te laden
-RATIO_LOOKBACK = 300         # 4 uur rolling window voor basis-statistiek
+RATIO_LOOKBACK = 300         # 5 uur rolling window voor basis-statistiek
 MIN_EXPECTED_WIN_PCT = 0.15  # Minimale verwachte winst per instap-slot
 
 # De 4 onafhankelijke instap-slots met bijbehorende Z-score drempels
@@ -24,7 +24,7 @@ SLOT_THRESHOLDS = {
 # JOUW GEOPTIMALISEERDE RISICOMANAGEMENT PARAMETERS
 MAX_DWELL_ENTRY_LIMIT = 15   # Maximaal toegestane plaktijd (minuten) buiten |Z|>=2.0 voor NIEUWE entries
 CRITICAL_DWELL_EXIT = 30     # Harde cluster-exit na 30 minuten holding time zonder convergentie
-BE_PROTECTION_Z = 0.8    # 🔥 NIEUW: Z-score grens waarna de Break-Even bescherming wordt geactiveerd
+BE_PROTECTION_Z = 0.8        # Z-score grens waarna de Break-Even bescherming wordt geactiveerd
 
 # Target mappenstructuur voor de schone start
 BASE_RESULTS_DIR = os.path.join("Strategies", "results", "daily_analysis_z_score_strategy")
@@ -73,6 +73,10 @@ def run_layered_backtest():
     df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
     df['expected_win'] = (df['ratio'] - df['ratio_mean']).abs() / df['ratio'] * 100 / 2
     
+    # 🔥 DATAGAP & WEEKEND PROTECTION: Controleer of het window aaneengesloten is
+    df['time_gap'] = df['time'] - df['time'].shift(RATIO_LOOKBACK)
+    df['is_continuous_window'] = df['time_gap'] <= pd.Timedelta(minutes=RATIO_LOOKBACK + 15)
+
     df = df.dropna(subset=['z_score']).reset_index(drop=True)
 
     # DIAGNOSTISCHE INDICATOR: Z-Score Dwell Time (Opeenvolgende minuten buiten |Z| >= 2.0)
@@ -122,7 +126,7 @@ def run_layered_backtest():
 
         active_slots = {}   
         current_regime = None  
-        regime_be_protected = False  # 🔥 NIEUW: State tracking voor de break-even stop
+        regime_be_protected = False  
         trades_log = []
         
         equity_curve_base = [0.0]
@@ -137,9 +141,10 @@ def run_layered_backtest():
             
             # REGIME FILTERS
             is_dwell_healthy = row['z_dwell_time'] < MAX_DWELL_ENTRY_LIMIT
+            is_valid_data = row['is_continuous_window']  # 🔥 WEEKEND CHECK
             
             is_inside_hours = time(4, 0) <= curr_time <= time(22, 0)
-            can_open_new = (time(4, 0) <= curr_time <= time(20, 0)) and is_dwell_healthy
+            can_open_new = (time(4, 0) <= curr_time <= time(20, 0)) and is_dwell_healthy and is_valid_data
             is_forced_close_time = curr_time >= time(22, 0) or i == (len(day_df) - 1)
 
             if current_regime is not None:
@@ -156,14 +161,14 @@ def run_layered_backtest():
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
                 
-                # B. 🔥 NIEUW: Scherpsetten van de Break-Even Stop (Mijlpaal bereikt)
+                # B. Scherpsetten van de Break-Even Stop
                 if not hit_reversion and not regime_be_protected:
                     if current_regime == 'SHORT_PAIR' and z_curr <= BE_PROTECTION_Z:
                         regime_be_protected = True
                     elif current_regime == 'LONG_PAIR' and z_curr >= -BE_PROTECTION_Z:
                         regime_be_protected = True
 
-                # C. 🔥 NIEUW: Bewaking van de Veilige Zone (Sluiten op 0.0% winst of lager)
+                # C. Bewaking van de Veilige Zone (Break-Even Exit)
                 if not hit_reversion and regime_be_protected:
                     total_current_pnl = 0.0
                     for slot_data in active_slots.values():
@@ -175,13 +180,12 @@ def run_layered_backtest():
                             pct_gold = ((slot_data['entry_gold'] - row['GOLD_close_ask']) / slot_data['entry_gold']) * 100
                         total_current_pnl += (pct_us500 + pct_gold) / 2
                     
-                    # Middel de floating winst over je actieve posities
                     avg_floating_pnl = total_current_pnl / len(active_slots)
                     if avg_floating_pnl <= 0.0:
                         hit_be_stop = True
                         exit_reason = "BREAK_EVEN_PROTECTION_EXIT"
                 
-                # D. Cluster-Exit Tijdstop (Gerekend vanaf Slot 1)
+                # D. Cluster-Exit Tijdstop
                 if not hit_reversion and not hit_be_stop and len(active_slots) > 0:
                     oldest_entry_idx = min([s['entry_idx'] for s in active_slots.values()])
                     trade_duration_mins = i - oldest_entry_idx
@@ -223,7 +227,7 @@ def run_layered_backtest():
                     
                     active_slots = {}
                     current_regime = None
-                    regime_be_protected = False # Reset status
+                    regime_be_protected = False
                     if is_forced_close_time:
                         continue
 
@@ -320,7 +324,7 @@ def run_layered_backtest():
             ax2.set_ylabel("GOLD ($)")
             ax2.grid(True, linestyle=':', alpha=0.3)
             
-            # 3. Z-SCORE (Met de nieuwe Veilige Zone stippellijnen)
+            # 3. Z-SCORE
             ax3.plot(day_df.index, day_df['z_score'], color='#6a3d9a', alpha=0.8, label='Z-Score')
             ax3.axhline(0, color='black', linestyle='-', alpha=0.4)
             for s_id, thresh in SLOT_THRESHOLDS.items():
@@ -368,7 +372,7 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_execution_chart.png"), dpi=300)
             plt.close()
             
-        print(f"✅ Handelsdag {target_date} succesvol berekend met Break-Even Protection Stop.")
+        print(f"✅ Handelsdag {target_date} succesvol berekend met Break-Even Protection Stop en Weekend Filter.")
 
 if __name__ == '__main__':
     run_layered_backtest()
