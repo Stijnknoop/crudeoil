@@ -11,9 +11,9 @@ from datetime import datetime, time
 # =========================================================================
 DATA_LIMIT = 5000           # Totaal aantal synchrone minuten om in te laden
 RATIO_LOOKBACK = 240         # 4 uur rolling window voor basis-statistiek
-MIN_EXPECTED_WIN_PCT = 0.20  # Minimale verwachte winst per instap-slot
+MIN_EXPECTED_WIN_PCT = 0.20  # 🔥 Jouw nieuwe minimale verwachte winst per instap-slot
 
-# De 4 onafhankelijke instap-slots met bijbehorende Z-score drempels
+# 🔥 Jouw nieuwe scherpere instap-slots
 SLOT_THRESHOLDS = {
     1: 2.0,
     2: 2.5,
@@ -21,10 +21,9 @@ SLOT_THRESHOLDS = {
     4: 3.5
 }
 
-# REGIME FILTERS & RISICOMANAGEMENT
-MAX_MEAN_SLOPE_LIMIT = 0.8  # Maximaal toegestane helling (%) van het 240m gemiddelde (30m delta)
+# 🔥 Jouw geoptimaliseerde risicomanagement parameters (Slope volledig verwijderd)
 MAX_DWELL_ENTRY_LIMIT = 15   # Maximaal toegestane plaktijd (minuten) buiten |Z|>=2.0 voor NIEUWE entries
-CRITICAL_DWELL_EXIT = 30     # Harde exit als een ACTIEVE TRADE langer dan 60 min vastzit zonder convergentie
+CRITICAL_DWELL_EXIT = 30     # Harde cluster-exit na 30 minuten holding time zonder convergentie
 
 # Target mappenstructuur voor de schone start
 BASE_RESULTS_DIR = os.path.join("Strategies", "results", "daily_analysis_z_score_strategy")
@@ -72,12 +71,12 @@ def run_layered_backtest():
     df['ratio_std'] = df['ratio'].rolling(window=RATIO_LOOKBACK).std()
     df['z_score'] = (df['ratio'] - df['ratio_mean']) / df['ratio_std']
     
-    # DIAGNOSTISCHE INDICATOR 1: Helling (Slope) van de Ratio Mean (30m % verandering van de 240m basislijn)
-    df['mean_slope_30m'] = (df['ratio_mean'] - df['ratio_mean'].shift(30)) / df['ratio_mean'].shift(30) * 100
+    # 🔥 NIEUW: Pre-calculatie van de Expected Win Percentage voor de indicator-grafiek
+    df['expected_win'] = (df['ratio'] - df['ratio_mean']).abs() / df['ratio'] * 100 / 2
     
-    df = df.dropna(subset=['z_score', 'mean_slope_30m']).reset_index(drop=True)
+    df = df.dropna(subset=['z_score']).reset_index(drop=True)
 
-    # DIAGNOSTISCHE INDICATOR 2: Z-Score Dwell Time (Opeenvolgende minuten buiten |Z| >= 2.0 voor instap-filtering)
+    # DIAGNOSTISCHE INDICATOR: Z-Score Dwell Time (Opeenvolgende minuten buiten |Z| >= 2.0)
     z_abs = df['z_score'].abs().values
     dwell = np.zeros(len(df))
     for k in range(1, len(df)):
@@ -118,9 +117,9 @@ def run_layered_backtest():
             
         print(f"🔥 [Data Run] Analyse uitvoeren voor handelssessie: {target_date}...")
         
-        max_slope = day_df['mean_slope_30m'].abs().max()
         max_dwell = day_df['z_dwell_time'].max()
-        print(f"   📈 [Regime Diagnose] Max Base Mean Slope (30m): {max_slope:.4f}% | Max Z-Score Dwell Time: {max_dwell:.0f} min")
+        max_exp_win = day_df['expected_win'].max()
+        print(f"   📈 [Regime Diagnose] Max Z-Score Dwell Time: {max_dwell:.0f} min | Max Expected Win: {max_exp_win:.2f}%")
 
         os.makedirs(day_output_dir, exist_ok=True)
 
@@ -136,19 +135,17 @@ def run_layered_backtest():
             row = day_df.iloc[i]
             curr_time = row['time'].time()
             z_curr = row['z_score']
+            expected_win = row['expected_win'] # Direct ingeladen uit de pre-calc kolom
             
-            # REGIME CHECKS FASE
-            is_slope_healthy = abs(row['mean_slope_30m']) <= MAX_MEAN_SLOPE_LIMIT
+            # REGIME FILTERS
             is_dwell_healthy = row['z_dwell_time'] < MAX_DWELL_ENTRY_LIMIT
             
             is_inside_hours = time(4, 0) <= curr_time <= time(22, 0)
-            # Nieuwe instappen mogen alleen plaatsvinden als het regime 'gezond' is
-            can_open_new = (time(4, 0) <= curr_time <= time(20, 0)) and is_slope_healthy and is_dwell_healthy
+            can_open_new = (time(4, 0) <= curr_time <= time(20, 0)) and is_dwell_healthy
             is_forced_close_time = curr_time >= time(22, 0) or i == (len(day_df) - 1)
 
             if current_regime is not None:
                 hit_reversion = False
-                hit_slope_stop = False
                 hit_dwell_stop = False
                 exit_reason = ""
                 
@@ -160,13 +157,8 @@ def run_layered_backtest():
                     hit_reversion = True
                     exit_reason = "MEAN_REVERSION_CONVERGENCE"
                 
-                # B. 🔥 NIEUW: Regime Shift Slope Exit (Achterdeur Beveiliging tijdens lopende trade)
-                if not hit_reversion and not is_slope_healthy:
-                    hit_slope_stop = True
-                    exit_reason = "REGIME_SHIFT_SLOPE_EXIT"
-                
-                # C. 🔥 NIEUW: Ononderbroken Trade Holding Exit (Voorkomt de Dwell Reset Trap)
-                if not hit_reversion and not hit_slope_stop and len(active_slots) > 0:
+                # B. Cluster-Exit Tijdstop (Gerekend vanaf Slot 1)
+                if not hit_reversion and len(active_slots) > 0:
                     oldest_entry_idx = min([s['entry_idx'] for s in active_slots.values()])
                     trade_duration_mins = i - oldest_entry_idx
                     if trade_duration_mins >= CRITICAL_DWELL_EXIT:
@@ -174,8 +166,8 @@ def run_layered_backtest():
                         exit_reason = "CRITICAL_DWELL_TIME_EXCEEDED"
                 
                 # Afhandeling van alle Exits
-                if hit_reversion or hit_slope_stop or hit_dwell_stop or is_forced_close_time:
-                    reason = exit_reason if (hit_reversion or hit_slope_stop or hit_dwell_stop) else "FORCED_EOD_CLOSE"
+                if hit_reversion or hit_dwell_stop or is_forced_close_time:
+                    reason = exit_reason if (hit_reversion or hit_dwell_stop) else "FORCED_EOD_CLOSE"
                     
                     for slot_id, slot_data in active_slots.items():
                         if current_regime == 'SHORT_PAIR':
@@ -211,7 +203,6 @@ def run_layered_backtest():
                         continue
 
                 elif can_open_new:
-                    expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     for slot_id, threshold in SLOT_THRESHOLDS.items():
                         if slot_id not in active_slots:
                             if current_regime == 'SHORT_PAIR' and z_curr >= threshold:
@@ -228,7 +219,6 @@ def run_layered_backtest():
                                     }
             else:
                 if can_open_new:
-                    expected_win = (abs(row['ratio'] - row['ratio_mean']) / row['ratio']) * 100 / 2
                     if expected_win >= MIN_EXPECTED_WIN_PCT:
                         for slot_id, threshold in SLOT_THRESHOLDS.items():
                             if z_curr >= threshold:
@@ -251,45 +241,35 @@ def run_layered_backtest():
         report_path = os.path.join(day_output_dir, "multi_backtest_report.md")
         with open(report_path, 'w') as f:
             f.write(f"# 📊 MANTRA: Layered Z-Score Session Report ({target_date})\n\n")
-            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID WITH ACTIVE REGIME EXITS`\n")
-            f.write(f"* **Configured Slot Thresholds:** Slot 1 (`1.5`), Slot 2 (`2.0`), Slot 3 (`2.5`), Slot 4 (`3.0`)\n")
-            f.write(f"* **Regime Control Thresholds:** Max Slope (`±{MAX_MEAN_SLOPE_LIMIT}%`) | Max Entry Dwell (`{MAX_DWELL_ENTRY_LIMIT}m`) | Max Trade Holding (`{CRITICAL_DWELL_EXIT}m`)\n")
+            f.write(f"* **Strategy Architecture:** `PURE MATHEMATICAL MULTI-SLOT GRID WITH TIMED CLUSTER RISK CONTROLS`\n")
+            f.write(f"* **Configured Slot Thresholds:** Slot 1 (`2.0`), Slot 2 (`2.5`), Slot 3 (`3.0`), Slot 4 (`3.5`)\n")
+            f.write(f"* **Filters:** Min Expected Win (`{MIN_EXPECTED_WIN_PCT}%`) | Max Entry Dwell (`{MAX_DWELL_ENTRY_LIMIT}m`) | Max Cluster Hold (`{CRITICAL_DWELL_EXIT}m`)\n")
             f.write(f"* **Operational Windows:** Entries `04:00 - 20:00` | Forced Hard EOD Close `22:00`\n\n")
             
-            f.write(f"### 🔍 Trend vs. Mean-Reversion Regime Indicators\n")
-            f.write(f"* **Max Ratio 240m Mean Slope (30m Delta):** `{max_slope:.4f}%`\n")
-            f.write(f"* **Max Z-Score Dwell Time (|Z| >= 2.0):** `{max_dwell:.0f} minutes`\n\n")
+            f.write(f"### 🔍 Session Statistical Highlights\n")
+            f.write(f"* **Max Z-Score Dwell Time (|Z| >= 2.0):** `{max_dwell:.0f} minutes`\n")
+            f.write(f"* **Peak Session Expected Win Value:** `{max_exp_win:.4f}%`\n\n")
             
             if len(trades_df) > 0:
                 winning_trades = len(trades_df[trades_df['pnl_pct'] > 0])
                 total_comb_pnl = trades_df['pnl_pct'].sum()
-                avg_comb_pnl = trades_df['pnl_pct'].mean()
-                net_portfolio_1x = total_comb_pnl / 4
-                net_portfolio_10x = net_portfolio_1x * 10
-                avg_slot_1x = avg_comb_pnl / 4
-                avg_slot_10x = avg_slot_1x * 10
+                net_portfolio_10x = (total_comb_pnl / 4) * 10
                 
                 f.write(f"### 📈 Session Key Performance Metrics\n")
                 f.write(f"* **Total Scaled Batches Executed:** {len(trades_df)}\n")
                 f.write(f"* **Batch Win Rate:** {(winning_trades / len(trades_df)) * 100:.2f}%\n")
-                f.write(f"* **Pure Combination Trade Yield (Rauw Totaal):** {total_comb_pnl:.4f}%\n")
-                f.write(f"* **Net Portfolio Session Yield (1x Base Portfolio):** {net_portfolio_1x:.4f}%\n")
-                f.write(f"* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **{net_portfolio_10x:.4f}%**\n")
-                f.write(f"* **Average Yield per Executed Slot (1x Base Portfolio):** {avg_slot_1x:.4f}%\n")
-                f.write(f"* **Average Yield per Executed Slot (10x Leveraged Portfolio):** {avg_slot_10x:.4f}%\n\n")
+                f.write(f"* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **{net_portfolio_10x:.4f}%**\n\n")
                 
-                f.write("### 📜 Session Transaction Ledger (Slot Decomposition)\n")
-                f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | PnL US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL GOLD | PnL Trade Combination | Cash PnL (1x) | Cash PnL (10x Leverage) | Reason |\n")
-                f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+                f.write("### 📜 Session Transaction Ledger\n")
+                f.write("| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL Trade Combination | Reason |\n")
+                f.write("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
                 for idx, r in trades_df.iterrows():
                     us500_pos = "SHORT" if "SHORT" in r['type'] else "LONG"
                     gold_pos = "LONG" if "SHORT" in r['type'] else "SHORT"
-                    cash_pnl_1x = r['pnl_pct'] / 4
-                    cash_pnl_10x = cash_pnl_1x * 10
                     f.write(f"| **Slot {r['slot']}** | {r['entry_time'].strftime('%H:%M')} | {r['exit_time'].strftime('%H:%M')} | "
-                            f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | {r['pct_us500']:.4f}% | "
-                            f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | {r['pct_gold']:.4f}% | "
-                            f"**{r['pnl_pct']:.4f}%** | {cash_pnl_1x:.4f}% | **{cash_pnl_10x:.4f}%** | `{r['reason']}` |\n")
+                            f"`{us500_pos}` | {r['entry_us500']:.2f} | {r['exit_us500']:.2f} | "
+                            f"`{gold_pos}` | {r['entry_gold']:.2f} | {r['exit_gold']:.2f} | "
+                            f"**{r['pnl_pct']:.4f}%** | `{r['reason']}` |\n")
             else:
                 f.write("### 📭 Session Report\nNo layered arbitrage boundaries were hit within active market hours today.")
 
@@ -307,6 +287,7 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_backtest_chart.png"), dpi=300)
             plt.close()
 
+            # 🔥 DIT IS NU HET OPGESCHONDE 5-LAAGS REALTIME DASHBOARD (Met Expected Win)
             fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5, 1, figsize=(16, 18), sharex=True)
             
             # 1. US500
@@ -329,19 +310,17 @@ def run_layered_backtest():
             ax3.set_ylabel("Z-Score")
             ax3.grid(True, linestyle=':', alpha=0.3)
 
-            # 4. HELLING VAN DE RATIO MEAN MET DREMPELLIJNEN
-            ax4.plot(day_df.index, day_df['mean_slope_30m'], color='#e31a1c', linewidth=1.5, label='240m Mean Slope (30m % Change)')
-            ax4.axhline(0, color='black', linestyle='-', alpha=0.5)
-            ax4.axhline(MAX_MEAN_SLOPE_LIMIT, color='red', linestyle='--', alpha=0.7, label=f'Healthy Bound (+{MAX_MEAN_SLOPE_LIMIT}%)')
-            ax4.axhline(-MAX_MEAN_SLOPE_LIMIT, color='red', linestyle='--', alpha=0.7, label=f'Healthy Bound (-{MAX_MEAN_SLOPE_LIMIT}%)')
-            ax4.set_ylabel("Slope (%)")
+            # 4. 🔥 NIEUW: EXPECTED WIN PERCENTAGE SUBPLOT (Vervangt de Mean Slope)
+            ax4.plot(day_df.index, day_df['expected_win'], color='#007acc', linewidth=1.5, label='Live Expected Win Yield (%)')
+            ax4.axhline(MIN_EXPECTED_WIN_PCT, color='darkblue', linestyle='--', linewidth=1.5, label=f'Min Entry Threshold ({MIN_EXPECTED_WIN_PCT}%)')
+            ax4.set_ylabel("Expected Win (%)")
             ax4.grid(True, linestyle=':', alpha=0.3)
             ax4.legend(loc="upper left")
 
-            # 5. Z-SCORE DWELL TIME MET DREMPELLIJNEN
+            # 5. Z-SCORE DWELL TIME
             ax5.plot(day_df.index, day_df['z_dwell_time'], color='#33a02c', linewidth=1.5, label='Z-Score Dwell Time (|Z| >= 2.0)')
             ax5.axhline(MAX_DWELL_ENTRY_LIMIT, color='orange', linestyle='--', alpha=0.8, label=f'Entry Block ({MAX_DWELL_ENTRY_LIMIT}m)')
-            ax5.axhline(CRITICAL_DWELL_EXIT, color='red', linestyle='--', alpha=0.8, label=f'Trade Max Hold ({CRITICAL_DWELL_EXIT}m)')
+            ax5.axhline(CRITICAL_DWELL_EXIT, color='red', linestyle='--', alpha=0.8, label=f'Cluster Max Hold ({CRITICAL_DWELL_EXIT}m)')
             ax5.set_ylabel("Minutes")
             ax5.grid(True, linestyle=':', alpha=0.3)
             ax5.legend(loc="upper left")
@@ -367,7 +346,7 @@ def run_layered_backtest():
             plt.savefig(os.path.join(day_output_dir, "multi_execution_chart.png"), dpi=300)
             plt.close()
             
-        print(f"✅ Handelsdag {target_date} succesvol berekend met Actieve Regime Exits.")
+        print(f"✅ Handelsdag {target_date} succesvol berekend met Expected Win indicator.")
 
 if __name__ == '__main__':
     run_layered_backtest()
