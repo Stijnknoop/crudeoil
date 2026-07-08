@@ -11,7 +11,7 @@ from datetime import datetime, time
 # =========================================================================
 DATA_LIMIT = 50000           # Totaal aantal synchrone minuten om in te laden
 RATIO_LOOKBACK = 240         # 4 uur rolling window voor basis-statistiek
-MIN_EXPECTED_WIN_PCT = 0.20  # Minimale verwachte winst per instap-slot
+MIN_EXPECTED_WIN_PCT = 0.10  # Minimale verwachte winst per instap-slot
 
 # De 4 onafhankelijke instap-slots met bijbehorende Z-score drempels
 SLOT_THRESHOLDS = {
