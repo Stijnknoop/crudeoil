@@ -10,7 +10,7 @@ from datetime import datetime, time
 # 🎛️ CENTRAL CONFIGURATION PANEL (AUTONOMOUS LAYERED Z-SCORE STRATEGY)
 # =========================================================================
 DATA_LIMIT = 50000           # Totaal aantal synchrone minuten om in te laden
-RATIO_LOOKBACK = 240         # 5 uur rolling window voor basis-statistiek
+RATIO_LOOKBACK = 150         # 5 uur rolling window voor basis-statistiek
 MIN_EXPECTED_WIN_PCT = 0.15  # Minimale verwachte winst per instap-slot
 
 # De 4 onafhankelijke instap-slots met bijbehorende Z-score drempels
@@ -22,7 +22,7 @@ SLOT_THRESHOLDS = {
 }
 
 # JOUW GEOPTIMALISEERDE RISICOMANAGEMENT PARAMETERS
-MAX_DWELL_ENTRY_LIMIT = 15   # Maximaal toegestane plaktijd (minuten) buiten |Z|>=2.0 voor NIEUWE entries
+MAX_DWELL_ENTRY_LIMIT = 10   # Maximaal toegestane plaktijd (minuten) buiten |Z|>=2.0 voor NIEUWE entries
 CRITICAL_DWELL_EXIT = 30     # Harde cluster-exit na 30 minuten holding time zonder convergentie
 BE_PROTECTION_Z = 0.5        # Z-score grens waarna de Break-Even bescherming wordt geactiveerd
 
