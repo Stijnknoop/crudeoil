@@ -4,9 +4,9 @@
 * **Filters:** Expected Win (`>=0.15%`) | Dwell Block (`10m`) | Cluster Exit (`30m`) | BE Trigger (`|Z|=0.5`)
 
 ### 📈 Session Key Performance Metrics
-* **Total Scaled Batches Executed:** 11
-* **Batch Win Rate:** 54.55%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **-0.2456%**
+* **Total Scaled Batches Executed:** 21
+* **Batch Win Rate:** 76.19%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **3.3805%**
 
 ### 📜 Session Transaction Ledger
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL Trade Combination | Reason |
@@ -22,3 +22,13 @@
 | **Slot 1** | 10:06 | 10:36 | `LONG` | 7333.70 | 7347.20 | `SHORT` | 4051.06 | 4070.33 | **-0.1458%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
 | **Slot 2** | 10:07 | 10:36 | `LONG` | 7336.20 | 7347.20 | `SHORT` | 4052.46 | 4070.33 | **-0.1455%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
 | **Slot 1** | 10:45 | 11:15 | `LONG` | 7344.40 | 7348.20 | `SHORT` | 4068.33 | 4065.29 | **0.0632%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 15:03 | 15:22 | `SHORT` | 7373.00 | 7375.50 | `LONG` | 4069.00 | 4082.40 | **0.1477%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 2** | 15:04 | 15:22 | `SHORT` | 7373.00 | 7375.50 | `LONG` | 4068.54 | 4082.40 | **0.1534%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 15:38 | 15:45 | `LONG` | 7379.00 | 7391.50 | `SHORT` | 4098.18 | 4088.14 | **0.2072%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 2** | 15:40 | 15:45 | `LONG` | 7371.10 | 7391.50 | `SHORT` | 4090.13 | 4088.14 | **0.1627%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 15:59 | 16:07 | `LONG` | 7409.90 | 7406.10 | `SHORT` | 4112.15 | 4096.51 | **0.1645%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 2** | 16:00 | 16:07 | `LONG` | 7411.40 | 7406.10 | `SHORT` | 4117.48 | 4096.51 | **0.2189%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 3** | 16:00 | 16:07 | `LONG` | 7411.40 | 7406.10 | `SHORT` | 4117.48 | 4096.51 | **0.2189%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 16:44 | 17:09 | `LONG` | 7403.60 | 7391.80 | `SHORT` | 4110.68 | 4091.02 | **0.1594%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 19:29 | 19:59 | `SHORT` | 7421.40 | 7422.20 | `LONG` | 4101.94 | 4102.60 | **0.0027%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 2** | 19:30 | 19:59 | `SHORT` | 7422.50 | 7422.20 | `LONG` | 4101.53 | 4102.60 | **0.0151%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
