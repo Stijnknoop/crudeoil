@@ -4,9 +4,9 @@
 * **Filters:** Expected Win (`>=0.15%`) | Dwell Block (`10m`) | Cluster Exit (`30m`) | BE Trigger (`|Z|=0.5`)
 
 ### 📈 Session Key Performance Metrics
-* **Total Scaled Batches Executed:** 11
-* **Batch Win Rate:** 81.82%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **0.8088%**
+* **Total Scaled Batches Executed:** 19
+* **Batch Win Rate:** 68.42%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **0.8217%**
 
 ### 📜 Session Transaction Ledger
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL Trade Combination | Reason |
@@ -22,3 +22,11 @@
 | **Slot 1** | 11:04 | 11:34 | `LONG` | 7667.10 | 7666.50 | `SHORT` | 4585.98 | 4582.97 | **0.0289%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
 | **Slot 2** | 11:07 | 11:34 | `LONG` | 7666.10 | 7666.50 | `SHORT` | 4589.72 | 4582.97 | **0.0761%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
 | **Slot 3** | 11:08 | 11:34 | `LONG` | 7665.60 | 7666.50 | `SHORT` | 4593.23 | 4582.97 | **0.1176%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 14:30 | 15:00 | `SHORT` | 7682.00 | 7684.40 | `LONG` | 4580.28 | 4582.05 | **0.0037%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 2** | 14:31 | 15:00 | `SHORT` | 7684.30 | 7684.40 | `LONG` | 4583.41 | 4582.05 | **-0.0155%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 3** | 14:32 | 15:00 | `SHORT` | 7684.20 | 7684.40 | `LONG` | 4579.16 | 4582.05 | **0.0303%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 4** | 14:32 | 15:00 | `SHORT` | 7684.20 | 7684.40 | `LONG` | 4579.16 | 4582.05 | **0.0303%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 16:27 | 16:57 | `LONG` | 7667.70 | 7674.00 | `SHORT` | 4602.02 | 4591.07 | **0.1601%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 18:04 | 18:34 | `LONG` | 7686.20 | 7678.90 | `SHORT` | 4616.98 | 4615.91 | **-0.0359%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 18:38 | 19:08 | `LONG` | 7683.20 | 7683.00 | `SHORT` | 4619.56 | 4631.77 | **-0.1335%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 2** | 18:51 | 19:08 | `LONG` | 7678.20 | 7683.00 | `SHORT` | 4625.71 | 4631.77 | **-0.0342%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
