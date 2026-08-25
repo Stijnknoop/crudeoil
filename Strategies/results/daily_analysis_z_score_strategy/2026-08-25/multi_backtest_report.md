@@ -1,0 +1,21 @@
+# 📊 MANTRA: Layered Z-Score Session Report (2026-08-25)
+
+* **Strategy Architecture:** `MULTI-SLOT GRID WITH VEILIGE ZONE BREAK-EVEN STOP`
+* **Filters:** Expected Win (`>=0.15%`) | Dwell Block (`10m`) | Cluster Exit (`30m`) | BE Trigger (`|Z|=0.5`)
+
+### 📈 Session Key Performance Metrics
+* **Total Scaled Batches Executed:** 8
+* **Batch Win Rate:** 75.00%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **0.4576%**
+
+### 📜 Session Transaction Ledger
+| Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL Trade Combination | Reason |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Slot 1** | 04:00 | 04:30 | `SHORT` | 7658.30 | 7656.20 | `LONG` | 4658.89 | 4651.45 | **-0.0661%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 2** | 04:02 | 04:30 | `SHORT` | 7658.80 | 7656.20 | `LONG` | 4656.10 | 4651.45 | **-0.0330%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 3** | 04:05 | 04:30 | `SHORT` | 7656.60 | 7656.20 | `LONG` | 4641.84 | 4651.45 | **0.1061%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 04:44 | 05:14 | `SHORT` | 7656.00 | 7659.40 | `LONG` | 4631.20 | 4633.72 | **0.0050%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 10:04 | 10:34 | `SHORT` | 7665.30 | 7677.90 | `LONG` | 4626.07 | 4634.95 | **0.0138%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 2** | 10:08 | 10:34 | `SHORT` | 7666.50 | 7677.90 | `LONG` | 4621.56 | 4634.95 | **0.0705%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 10:51 | 11:21 | `SHORT` | 7679.30 | 7683.90 | `LONG` | 4625.53 | 4631.13 | **0.0306%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 11:30 | 12:00 | `SHORT` | 7683.10 | 7693.40 | `LONG` | 4624.65 | 4636.04 | **0.0561%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
