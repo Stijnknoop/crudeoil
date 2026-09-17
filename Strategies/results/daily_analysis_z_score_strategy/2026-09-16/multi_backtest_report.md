@@ -4,9 +4,9 @@
 * **Filters:** Expected Win (`>=0.15%`) | Dwell Block (`10m`) | Cluster Exit (`30m`) | BE Trigger (`|Z|=0.5`)
 
 ### 📈 Session Key Performance Metrics
-* **Total Scaled Batches Executed:** 6
-* **Batch Win Rate:** 50.00%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **0.2739%**
+* **Total Scaled Batches Executed:** 7
+* **Batch Win Rate:** 57.14%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **0.8137%**
 
 ### 📜 Session Transaction Ledger
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL Trade Combination | Reason |
@@ -17,3 +17,4 @@
 | **Slot 2** | 12:29 | 12:57 | `LONG` | 7601.70 | 7600.80 | `SHORT` | 4347.88 | 4348.25 | **-0.0102%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
 | **Slot 1** | 16:02 | 16:32 | `SHORT` | 7610.30 | 7600.40 | `LONG` | 4332.57 | 4336.18 | **0.1067%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
 | **Slot 2** | 16:03 | 16:32 | `SHORT` | 7608.60 | 7600.40 | `LONG` | 4330.97 | 4336.18 | **0.1140%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 19:59 | 20:00 | `LONG` | 7613.10 | 7607.20 | `SHORT` | 4360.63 | 4338.42 | **0.2159%** | `MEAN_REVERSION_CONVERGENCE` |
