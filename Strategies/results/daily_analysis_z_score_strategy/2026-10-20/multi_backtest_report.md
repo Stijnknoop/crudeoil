@@ -6,7 +6,7 @@
 ### 📈 Session Key Performance Metrics
 * **Total Scaled Batches Executed:** 9
 * **Batch Win Rate:** 100.00%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **2.1140%**
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **2.4166%**
 
 ### 📜 Session Transaction Ledger
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL Trade Combination | Reason |
@@ -19,4 +19,4 @@
 | **Slot 1** | 15:42 | 15:52 | `LONG` | 7669.80 | 7686.50 | `SHORT` | 4129.60 | 4125.04 | **0.1641%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 2** | 15:44 | 15:52 | `LONG` | 7671.30 | 7686.50 | `SHORT` | 4129.63 | 4125.04 | **0.1546%** | `MEAN_REVERSION_CONVERGENCE` |
 | **Slot 1** | 16:02 | 16:26 | `SHORT` | 7706.60 | 7732.10 | `LONG` | 4122.19 | 4148.09 | **0.1487%** | `MEAN_REVERSION_CONVERGENCE` |
-| **Slot 1** | 16:51 | 17:01 | `SHORT` | 7740.90 | 7742.00 | `LONG` | 4139.09 | 4141.30 | **0.0196%** | `FORCED_EOD_CLOSE` |
+| **Slot 1** | 16:51 | 17:12 | `SHORT` | 7740.90 | 7717.50 | `LONG` | 4139.09 | 4138.22 | **0.1406%** | `MEAN_REVERSION_CONVERGENCE` |
