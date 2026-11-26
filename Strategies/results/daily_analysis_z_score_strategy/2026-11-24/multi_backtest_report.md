@@ -4,9 +4,9 @@
 * **Filters:** Expected Win (`>=0.15%`) | Dwell Block (`10m`) | Cluster Exit (`30m`) | BE Trigger (`|Z|=0.5`)
 
 ### 📈 Session Key Performance Metrics
-* **Total Scaled Batches Executed:** 19
-* **Batch Win Rate:** 21.05%
-* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **-4.0517%**
+* **Total Scaled Batches Executed:** 18
+* **Batch Win Rate:** 33.33%
+* **Net Portfolio Session Yield (10x Leveraged Portfolio):** **-1.8645%**
 
 ### 📜 Session Transaction Ledger
 | Slot | Entry Time | Exit Time | US500 Pos | Entry US500 | Exit US500 | Gold Pos | Entry GOLD | Exit GOLD | PnL Trade Combination | Reason |
@@ -21,12 +21,11 @@
 | **Slot 3** | 09:38 | 10:07 | `LONG` | 7233.10 | 7209.30 | `SHORT` | 3623.68 | 3618.53 | **-0.0935%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
 | **Slot 1** | 10:13 | 10:43 | `LONG` | 7216.50 | 7219.60 | `SHORT` | 3621.22 | 3623.10 | **-0.0045%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
 | **Slot 1** | 11:39 | 12:09 | `LONG` | 7193.90 | 7181.50 | `SHORT` | 3623.58 | 3624.51 | **-0.0990%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
-| **Slot 1** | 12:13 | 12:43 | `LONG` | 7169.00 | 7187.40 | `SHORT` | 3623.36 | 3634.68 | **-0.0279%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
-| **Slot 1** | 13:38 | 14:08 | `LONG` | 7162.20 | 7157.90 | `SHORT` | 3634.13 | 3632.57 | **-0.0086%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
-| **Slot 1** | 14:11 | 14:32 | `LONG` | 7151.60 | 7140.00 | `SHORT` | 3635.96 | 3629.58 | **0.0066%** | `BREAK_EVEN_PROTECTION_EXIT` |
-| **Slot 2** | 14:12 | 14:32 | `LONG` | 7143.50 | 7140.00 | `SHORT` | 3630.42 | 3629.58 | **-0.0129%** | `BREAK_EVEN_PROTECTION_EXIT` |
-| **Slot 1** | 15:45 | 16:15 | `SHORT` | 7204.10 | 7207.00 | `LONG` | 3628.32 | 3599.78 | **-0.4134%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
-| **Slot 2** | 15:46 | 16:15 | `SHORT` | 7205.90 | 7207.00 | `LONG` | 3630.65 | 3599.78 | **-0.4328%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
-| **Slot 3** | 15:57 | 16:15 | `SHORT` | 7212.40 | 7207.00 | `LONG` | 3620.81 | 3599.78 | **-0.2530%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
-| **Slot 1** | 16:56 | 17:26 | `SHORT` | 7177.90 | 7172.00 | `LONG` | 3573.60 | 3569.56 | **-0.0154%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
-| **Slot 1** | 18:23 | 18:53 | `SHORT` | 7192.20 | 7197.80 | `LONG` | 3564.10 | 3562.86 | **-0.0563%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 12:11 | 12:41 | `LONG` | 7172.20 | 7175.60 | `SHORT` | 3624.61 | 3630.52 | **-0.0578%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 13:42 | 14:12 | `LONG` | 7168.00 | 7142.90 | `SHORT` | 3639.19 | 3630.92 | **-0.0615%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 14:13 | 14:38 | `LONG` | 7139.60 | 7152.80 | `SHORT` | 3633.18 | 3621.81 | **0.2489%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 2** | 14:16 | 14:38 | `LONG` | 7136.60 | 7152.80 | `SHORT` | 3631.97 | 3621.81 | **0.2534%** | `MEAN_REVERSION_CONVERGENCE` |
+| **Slot 1** | 15:43 | 16:13 | `SHORT` | 7194.40 | 7201.40 | `LONG` | 3628.72 | 3604.69 | **-0.3798%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 2** | 15:46 | 16:13 | `SHORT` | 7205.90 | 7201.40 | `LONG` | 3629.92 | 3604.69 | **-0.3163%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 16:56 | 17:26 | `SHORT` | 7177.90 | 7172.00 | `LONG` | 3571.75 | 3569.56 | **0.0104%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
+| **Slot 1** | 18:23 | 18:53 | `SHORT` | 7192.20 | 7197.80 | `LONG` | 3562.66 | 3562.86 | **-0.0361%** | `CRITICAL_DWELL_TIME_EXCEEDED` |
